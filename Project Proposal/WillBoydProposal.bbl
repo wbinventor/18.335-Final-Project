@@ -1,0 +1,24 @@
+\begin{thebibliography}{1}
+
+
+\bibitem{knoll:2004}
+D.~A. Knoll, D.~E. Keyes.
+\newblock {J}acobian-free {N}ewton-{K}rylov {M}ethods: {A} {S}urvey of {A}pproaches and {A}pplications.
+\newblock {\em {J}ourn. of {C}omp. {P}hys.}, 193:357-397, 2004.
+
+\bibitem{gill:2009}
+D.~F.~Gill.
+\newblock {N}ewton-{K}rylov {M}ethods for the {S}olution of the k-{E}igenvalue {P}roblem in {M}ultigroup {N}eutronics {C}alculations.
+\newblock PhD thesis, Pennsylvania State University, 2009.
+
+\bibitem{dembo:1982}
+R.~S. Dembo, S.~C. Eisenstat, T. Steihaug.
+\newblock {I}nexact {N}ewton's {M}ethod.
+\newblock {\em {SIAM} {J}ourn. on {N}um. {A}nalysis}, 19(2):400-408, 1982.
+
+\bibitem{knoll:1999}
+D.~A. Knoll, W.~J. Rider.
+\newblock {A} {M}ultigrid {P}reconditioned {N}ewton-{K}rylov {M}ethod.
+\newblock {\em {SIAM} Journ. Sci. Comp.}, 21(2):691-710, 1999.
+
+\end{thebibliography}

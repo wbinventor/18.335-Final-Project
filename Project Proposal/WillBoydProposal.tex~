@@ -1,0 +1,66 @@
+\documentclass{article}
+
+\usepackage{multicol}
+
+\usepackage{amsmath,amsfonts,amsthm,amssymb}
+\usepackage{setspace}
+\usepackage{fancyhdr}
+\usepackage{lastpage}
+\usepackage{extramarks}
+\usepackage{chngpage}
+\usepackage{soul}
+\usepackage[usenames,dvipsnames]{color}
+\usepackage{graphicx,float,wrapfig}
+\usepackage{ifthen}
+\usepackage{listings}
+\usepackage{courier}
+\usepackage{hyperref}
+\usepackage{listings}
+\usepackage{color}
+\usepackage{mathtools}
+\usepackage{txfonts}
+
+% In case you need to adjust margins:
+\topmargin=-0.45in      %
+\evensidemargin=0in     %
+\oddsidemargin=0in      %
+\textwidth=6.5in        %
+\textheight=9.0in       %
+\headsep=0.25in         %
+
+
+\begin{document}
+
+\begin{center}
+
+{\bfseries\huge Multigrid Preconditioning for a Jacobian-Free Newton-Krylov Solver}\\[0.5cm]
+
+% author names
+\emph{\large{18.335 Term Project Proposal}} \\
+\emph{\large{Will Boyd}} \\
+\emph{\large{10/25/2012}}
+
+\bigskip
+
+% affiliation information
+\emph{}
+
+\end{center}
+
+%\begin{multicols}{2}
+
+	% Description of work
+
+    The objective of this term project will be to evaluate a Jacobian-Free Newton-Krylov (JFNK) method with multigrid preconditioning. Newton-Krylov methods take a hybrid approach to solving nonlinear equations which uses an outer solver based on Newton's method along with a Krylov subspace-based method for the Newton correction at each iteration\cite{knoll:2004}. The Jacobian-Free Newton-Krylov framework avoids the complexity of explicitly solving for and storing the Jacobian needed for the Newton correction. JFNK has been applied to a variety of problems including neutron transport and diffusion\cite{gill:2009}. The performance of JFNK has been shown to be strongly dependent on preconditioning of the Krylov solver and a number of approaches, including incomplete lower-upper (ILU), Newton-Krylov-Schwarz, physics-based and multigrid (MG) preconditioners have been used and documented\cite{knoll:2004}. This term project will implement JFNK for the simple problem of 2D neutron diffusion and will analyze the use of MG preconditioning for performance enhancements. \\
+
+    This project will have three primary phases: 1) implementation of a JFNK solver, 2) implementation of a multigrid preconditioner, and 3) analysis of the convergence properties of MG and JFNK for some simple neutron diffusion problems. All code development will be done in MATLAB or Python. The JFNK solver will utilize Inexact Newton's Method\cite{dembo:1982} for the outer nonlinear iteration, as is commonly done with JFNK\cite{knoll:2004}. The inner linear Krylov method will use MATLAB's canned GMRES routines (if time permits once MG is implemented, GMRES will be manually implemented as well). \\
+
+    The second phase will require implementation of a multigrid preconditioner\cite{stuben:2001}. Multigrid preconditioning has been shown to improve the scaling of the number of Krylov iterations required as the system size increases \cite{knoll:1999}. Since the diffusion code will be based on a regular Cartesian mesh, a geometric multigrid preconditioner will most likely be the best option. The purpose of this phase will be to evaluate the effectiveness of MG with respect to the number of inner/outer iterations (and the runtime) of JFNK as the size and complexity of the geometry for the 2D neutron diffusion problem is increased. \\
+
+    The final phase will evaluate the performance benefits of using MG for JFNK. In this phase I will run a series of cases with different geometries and vary the convergence criteria for the inner/outer loops of JFNK to determine the effects that MG has on iteration count and runtime. I will also attempt an analysis of the cache complexity and flop count for JFNK both with and without MG preconditioning. This will be done analytically and/or empirically using PAPI for MATLAB, a library for measuring hardware performance counters.
+
+
+\bibliographystyle{plain}	% (uses file "plain.bst")
+\bibliography{proposal}		% expects file "proposal.bib"
+
+\end{document}
