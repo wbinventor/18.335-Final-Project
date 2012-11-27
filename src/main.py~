@@ -83,7 +83,7 @@ class LRAProblem:
 		self._materials = zeros([self._num_x_cells, self._num_y_cells], float)
 		for i in range(self._num_x_cells):
 			for j in range(self._num_y_cells):
-				self._materials[j][i] = self._material_ids[j  / self._num_mesh_x][i / self._num_mesh_y]
+				self._materials[j,i] = self._material_ids[j  / self._num_mesh_x][i / self._num_mesh_y]
 
 		# Sparse destruction matrix used for solver (initialized empty)
 		self._M = lil_matrix((10, 10))
@@ -116,10 +116,12 @@ class LRAProblem:
 		show()
 
 
-	def spyM(self):
-		figure()
+	def spyMF(self):
+		fig = figure()
+		fig.add_subplot(121)		
 		spy(self._M)
-		show()
+		fig.add_subplot(122)		
+		spy(self._F)
 
 
 	def computeDCouple(self, D1, D2, delta):
@@ -141,7 +143,8 @@ class LRAProblem:
 		M_ldiag = np.zeros(size)
 		M_2ldiag = np.zeros(size)
 		M_3ldiag = np.zeros(size)
-		F_diag = np.zeros(size)
+		F_diag1 = np.zeros(size)
+		F_diag2 = np.zeros(size)
 		
 
 		for i in range(size):
@@ -150,27 +153,27 @@ class LRAProblem:
 			if i < size / 2:
 				x = i % self._num_x_cells
 				y = i / self._num_y_cells
-				mat_id = self._materials[y][x]
+				mat_id = self._materials[y,x]
 
 				# 2D lower - leakage from top cell
 				if y > 0:
 					M_2ldiag[i-self._num_x_cells] = -self._dx * self.computeDCouple(self._D[mat_id][0], \
-												self._D[self._materials[y-1][x]][0], self._dy)
+												self._D[self._materials[y-1,x]][0], self._dy)
 
 				# lower - leakage from left cell
 				if x > 0:
 					M_ldiag[i-1] = -self._dy * self.computeDCouple(self._D[mat_id][0], \
-												self._D[self._materials[y][x-1]][0], self._dx)
+												self._D[self._materials[y,x-1]][0], self._dx)
 
 				# 2D upper - leakage from bottom cell
 				if y < self._num_y_cells-1:
 					M_2udiag[i+self._num_x_cells] = -self._dx * self.computeDCouple(self._D[mat_id][0], \
-												self._D[self._materials[y+1][x]][0], self._dy)
+												self._D[self._materials[y+1,x]][0], self._dy)
 
 				# upper - leakage from right cell
 				if x < self._num_x_cells-1:
 					M_udiag[i+1] = -self._dy * self.computeDCouple(self._D[mat_id][0], \
-												self._D[self._materials[y][x+1]][0], self._dx)
+												self._D[self._materials[y,x+1]][0], self._dx)
 
 				# diagonal
 				M_diag[i] = (self._SigmaA[mat_id][0] + \
@@ -180,31 +183,44 @@ class LRAProblem:
 				# leakage into cell above
 				if y > 0:
 					M_diag[i] += self._dx * self.computeDCouple(self._D[mat_id][0], \
-												self._D[self._materials[y-1][x]][0], self._dy)
+												self._D[self._materials[y-1,x]][0], self._dy)
 
 				# leakage into cell below
 				if y < self._num_y_cells-1:
 					M_diag[i] += self._dx * self.computeDCouple(self._D[mat_id][0], \
-												self._D[self._materials[y+1][x]][0], self._dy)
+												self._D[self._materials[y+1,x]][0], self._dy)
 
 				# leakage into cell to the left
 				if x > 0:
 					M_diag[i] += self._dy * self.computeDCouple(self._D[mat_id][0], \
-												self._D[self._materials[y][x-1]][0], self._dy)
+												self._D[self._materials[y,x-1]][0], self._dy)
 
 				# leakage into cell to the right
 				if x < self._num_x_cells-1:
 					M_diag[i] += self._dy * self.computeDCouple(self._D[mat_id][0], \
-												self._D[self._materials[y][x+1]][0], self._dy)
+												self._D[self._materials[y,x+1]][0], self._dy)
+
+				# leakage into vacuum for cells at the topmost edge of the geometry
+				if (y == 0):
+					M_diag[i] += (2.0 * self._D[mat_id][0] / self._dx) * \
+									(1.0 / (1.0 + (4.0 *  self._D[mat_id][0] / self._dx)))
+
+				# leakage into vacuum for cells at the rightmost edge of the geometry
+				if (x == self._num_x_cells-1):
+					M_diag[i] += (2.0 * self._D[mat_id][0] / self._dy) * \
+									(1.0 / (1.0 + (4.0 *  self._D[mat_id][0] / self._dx)))
 
 				# fission production
-				F_diag[i] = self._NuSigmaF[mat_id][0]
+				F_diag1[i] = self._NuSigmaF[mat_id][0]
+
+				# fission production
+				F_diag2[i+size/2] = self._NuSigmaF[mat_id][1]
 
 			# energy group 2
 			else:
 				x = (i-(size/2)) % self._num_x_cells
 				y = (i-(size/2)) / self._num_y_cells
-				mat_id = self._materials[y][x]
+				mat_id = self._materials[y,x]
 
 				# Group 1 scattering into group 2
 				M_3ldiag[i-size/2] = -self._SigmaS21[mat_id] * self._dx * self._dy
@@ -212,22 +228,22 @@ class LRAProblem:
 				# 2self._D lower - leakage from top cell
 				if y > 0:
 					M_2ldiag[i-self._num_x_cells] = -self._dx * self.computeDCouple(self._D[mat_id][1], \
-												self._D[self._materials[y-1][x]][1], self._dy)
+												self._D[self._materials[y-1,x]][1], self._dy)
 
 				# lower - leakage from left cell
 				if x > 0:
 					M_ldiag[i-1] = -self._dy * self.computeDCouple(self._D[mat_id][1], \
-												self._D[self._materials[y][x-1]][1], self._dx)
+												self._D[self._materials[y,x-1]][1], self._dx)
 
 				# 2self._D upper - leakage from bottom cell
 				if y < self._num_y_cells-1:
 					M_2udiag[i+self._num_x_cells] = -self._dx * self.computeDCouple(self._D[mat_id][1], \
-												self._D[self._materials[y+1][x]][1], self._dy)
+												self._D[self._materials[y+1,x]][1], self._dy)
 
 				# upper - leakage from right cell
 				if x < self._num_x_cells-1:
 					M_udiag[i+1] = -self._dy * self.computeDCouple(self._D[mat_id][1], \
-												self._D[self._materials[y][x+1]][1], self._dx)
+												self._D[self._materials[y,x+1]][1], self._dx)
 
 				# diagonal
 				M_diag[i] = self._SigmaA[mat_id][1] * self._dx * self._dy
@@ -235,31 +251,39 @@ class LRAProblem:
 				# leakage into cell above
 				if y > 0:
 					M_diag[i] += self._dx * self.computeDCouple(self._D[mat_id][1], \
-												self._D[self._materials[y-1][x]][1], self._dy)
+												self._D[self._materials[y-1,x]][1], self._dy)
 
 				# leakage into cell below
 				if y < self._num_y_cells-1:
 					M_diag[i] += self._dx * self.computeDCouple(self._D[mat_id][1], \
-												self._D[self._materials[y+1][x]][1], self._dy)
+												self._D[self._materials[y+1,x]][1], self._dy)
 
 				# leakage into cell to the left
 				if x > 0:
 					M_diag[i] += self._dy * self.computeDCouple(self._D[mat_id][1], \
-												self._D[self._materials[y][x-1]][1], self._dy)
+												self._D[self._materials[y,x-1]][1], self._dy)
 
 				# leakage into cell to the right
 				if x < self._num_x_cells-1:
 					M_diag[i] += self._dy * self.computeDCouple(self._D[mat_id][1], \
-												self._D[self._materials[y][x+1]][1], self._dy)
+												self._D[self._materials[y,x+1]][1], self._dy)
 
-				# fission production
-				F_diag[i] = self._NuSigmaF[mat_id][1]
+				# leakage into vacuum for cells at the topmost edge of the geometry
+				if (y == 0):
+					M_diag[i] += (2.0 * self._D[mat_id][0] / self._dx) * \
+									(1.0 / (1.0 + (4.0 *  self._D[mat_id][1] / self._dx)))
+
+				# leakage into vacuum for cells at the rightmost edge of the geometry
+				if (x == self._num_x_cells-1):
+					M_diag[i] += (2.0 * self._D[mat_id][0] / self._dy) * \
+									(1.0 / (1.0 + (4.0 *  self._D[mat_id][1] / self._dy)))
+
 
 		# Construct sparse diagonal matrices
 		self._M = dia_matrix(([M_diag, M_udiag, M_2udiag, M_ldiag, M_2ldiag, M_3ldiag], \
 								[0, 1, self._num_x_cells, -1, -self._num_x_cells, -size/2]), \
 								shape=(size, size))
-		self._F = dia_matrix(([F_diag], [0]), shape=(size, size))
+		self._F = dia_matrix(([F_diag1, F_diag2], [0, size/2]), shape=(size, size))
 
 
 def powerIteration(M, F, max_iters, tol):
@@ -309,8 +333,10 @@ def powerIteration(M, F, max_iters, tol):
 
 	# Plot the thermal and fast flux and convergence rate
 	fig = figure()
-	phi_g1 = np.reshape(phi[0:LRA._num_y_cells * LRA._num_x_cells], (-LRA._num_y_cells, LRA._num_y_cells))
-	phi_g2 = np.reshape(phi[LRA._num_y_cells * LRA._num_x_cells:], (-LRA._num_y_cells, LRA._num_y_cells))
+	phi_g1 = np.reshape(phi[0:LRA._num_y_cells * LRA._num_x_cells], (-LRA._num_y_cells, LRA._num_y_cells), order='A')
+	phi_g2 = np.reshape(phi[LRA._num_y_cells * LRA._num_x_cells:], (-LRA._num_y_cells, LRA._num_y_cells), order='A')
+	phi_g1 = np.flipud(phi_g1)
+	phi_g2 = np.flipud(phi_g2)
 	
 	fig.add_subplot(221)
 	pcolor(linspace(0, 165, LRA._num_x_cells), linspace(0, 165, LRA._num_y_cells), phi_g1)
@@ -331,33 +357,158 @@ def powerIteration(M, F, max_iters, tol):
 	ylabel('residual')
 	title('Residuals')
 
-
 	show()
 
 	return
 
 
+
+def givens(H, c, s, g, n):
+
+	# Apply all previous rotations to new column	
+	for i in range(n):
+	
+		# Apply rotation to row i
+		tmp1 = c[i] * H[i,n] - s[i] * H[i+1,n]
+		tmp2 = s[i] * H[i,n] + c[i] * H[i+1,n]
+
+		# Transfer computed values back to matrix
+		H[i,n] = tmp1
+		H[i+1,n] = tmp2
+
+	# Compute cos and sin for new rotation
+	r = sqrt(H[n,n]**2 + H[n+1,n]**2)
+	c[n] = H[n,n] / r
+	s[n] = -H[n+1,n] / r
+
+	# Apply new rotation to new column
+	tmp1 = c[n] * H[n,n] - s[n] * H[n+1,n]
+	tmp2 = s[n] * H[n,n] + c[n] * H[n+1,n]
+
+	# Transfer computed values back to matrix
+	H[n,n] = tmp1
+	H[n+1,n] = tmp2
+
+	# Zero out sub-diagonal (to correct for roundoff)
+	H[n+1,n] = 0.0
+
+	# Apply new rotation to g
+	tmp1 = c[n] * g[n] - s[n] * g[n+1]
+	tmp2 = s[n] * g[n] + c[n] * g[n+1]
+	g[n] = tmp1
+	g[n] = tmp2
+
+	return
+
+
+
+
+def gmres(M, F, phi, keff, restart_iter, outer_iter, tol):
+	
+	# Find the size of b
+	m = phi.size
+
+	Q = np.zeros((m, restart_iter+1))
+	H = np.zeros((restart_iter+1, restart_iter))
+	err = np.ones((outer_iter*restart_iter, 1))
+	c = np.zeros((restart_iter+1, 1))
+	s = np.zeros((restart_iter+1, 1))
+
+	for k in range(outer_iter):
+		
+		b = (1. / keff) * F * phi
+		r = b - M * phi
+		beta = norm(r)
+
+		g = np.zeros((restart_iter+1, 1))
+		g[0] = beta
+
+		# Check for convergence
+		if beta < tol:
+			break
+
+		# Compute first Q
+		Q[:,0] = r.T / beta
+
+		# GMRES	on the residual error
+		for n in range(restart_iter):
+			
+			# Arnoldi
+			y = Q[:, n]
+			v = M * y
+			normv1 = norm(v)
+
+			# Loop over previous vectors
+			for j in range(n+1):
+				# Orthogonal projection of A onto new Krylov subspace
+				# H = Q'AQ
+				H[j,n] = np.vdot(Q[:,j], v)
+				
+				# Equation 33.4 in Trefethen
+				v = v - H[j,n-1] * Q[:,j]
+
+			# Compute new H
+			H[n,n-1] = norm(v)
+			normv2 = H[n,n-1]
+
+			# May need to reorthogonalize here
+
+			# Compute next column of Q
+			Q[:,n] = v.T / H[n,n-1]
+
+			# Apply Givens rotation to new column of H
+			givens(H, c, s, g, n)
+
+			# Compute the error for this outer/inner iteration pair
+			err[n+restart_iter*(k-1)-1] = abs(g[n])
+			
+			# Check for convergence
+			if (err[n+restart_iter*(k-1)-1] < tol):
+				print 'err = ' + str(err[n+restart_iter*(k-1)-1])
+				break
+
+		# Compute y
+		print 'Q = ' + str(Q)
+		print 'g = ' + str(g)
+		print 'H.shape = ' + str(H.shape)
+		print 'H[0:n,0:n] = ' + str(H[:n+1,:n+1])
+		y = np.linalg.solve(H[0:n,0:n], g[0:n])
+		
+		# Compute new x
+		print 'y = ' + str(y)
+		print 'Q[:,0:n-1] = ' + str(Q[:,:n-1])
+		phi = phi + Q[:,0:n-1] * y
+		
+		# Check convergence and break outer loop
+		if err[k*n-1] < tol:
+			break
+
+	return x
+
+
+
+
 if __name__ == '__main__':
 
     # Parse command line options
-	opts, args = getopt.getopt(sys.argv[1:], "p:s:n:t:", \
-									["num_mesh", "plot_mesh", "spyM", "tolerance"])
+	opts, args = getopt.getopt(sys.argv[1:], "t:n:psn", \
+									["num_mesh", "plot_mesh", "spy", "tolerance"])
 
 	# Default arguments
 	num_mesh = 5
 	tolerance = 1E-3
 	plot_mesh = False
-	spyA = False
+	spyMF = False
 
 	for o, a in opts:
 		if o in ("-n", "--num_mesh"):
-			num_mesh = int(a)
+			num_mesh = min(int(a), 8)
 		elif o in ("-t", "--tolerance"):
 			tolerance = float(a)
 		elif o in ("-p", "--plot_mesh"):
 			plot_mesh = True
-		elif o in ("-s", "--spyM"):
-			spyA = True
+		elif o in ("-s", "--spy"):
+			spyMF = True
 		else:
 			assert False, "unhandled option"
 
@@ -367,7 +518,38 @@ if __name__ == '__main__':
 
 	if plot_mesh:
 		LRA.plotMesh()
-	if spyA:
-		LRA.spyM()
+	if spyMF:
+		LRA.spyMF()
 
-	powerIteration(LRA._M, LRA._F, 1000, tolerance)
+#	powerIteration(LRA._M, LRA._F, 200, tolerance)
+
+
+	
+	A = np.array([[6., 5., 0., 0.], [5., 1., 4., 0.], [0., 4., 3., 0.], [0., 0., 0., 0.]])
+	c = np.zeros(4)
+	s = np.zeros(4)
+	g = np.zeros(4)
+
+	n=0
+	givens(A,c,s,g,n)
+	print 'A = ' + str(A)
+	n=1
+	givens(A,c,s,g,n)
+	print 'A = ' + str(A)
+	n=2
+	givens(A,c,s,g,n)
+	print 'A = ' + str(A)
+	
+
+	# Guess initial keff
+	keff = 1.0
+
+	# Guess initial flux and normalize it
+	phi = np.ones((LRA._M.shape[1], 1))
+	phi = phi / norm(phi)
+
+	restart_iter = 5
+	outer_iter = 1000
+	tol = 1E-3
+
+#	x = gmres(LRA._M, LRA._F, phi, keff, restart_iter, outer_iter, tol)
