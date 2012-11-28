@@ -1,14 +1,11 @@
 import numpy as np
 from pylab import *
 from scipy.sparse import lil_matrix, dia_matrix
-from scipy.sparse.linalg import spsolve
+from scipy.sparse.linalg import gmres
+from scipy.linalg import eig
 from os import *
 from sys import *
 import getopt
-
-
-
-# INDEXING IS IN Y,X ORDER!!!!!
 
 
 
@@ -42,13 +39,13 @@ class LRAProblem:
 									   [5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5],
 									   [3, 3, 3, 3, 3, 3, 3, 5, 5, 5, 5],
 									   [3, 3, 3, 3, 3, 3, 3, 4, 5, 5, 5],
-									   [2, 5, 5, 5, 5, 2, 2, 3, 3, 5, 5],
-									   [2, 5, 5, 5, 5, 2, 2, 3, 3, 5, 5],
-									   [5, 5, 5, 5, 5, 5, 5, 3, 3, 5, 5],
-									   [5, 5, 5, 5, 5, 5, 5, 3, 3, 5, 5],
-									   [5, 5, 5, 5, 5, 5, 5, 3, 3, 5, 5],
-									   [5, 5, 5, 5, 5, 5, 5, 3, 3, 5, 5],
-									   [2, 5, 5, 5, 5, 2, 2, 3, 3, 5, 5]])
+									   [2, 1, 1, 1, 1, 2, 2, 3, 3, 5, 5],
+									   [2, 1, 1, 1, 1, 2, 2, 3, 3, 5, 5],
+									   [1, 1, 1, 1, 1, 1, 1, 3, 3, 5, 5],
+									   [1, 1, 1, 1, 1, 1, 1, 3, 3, 5, 5],
+									   [1, 1, 1, 1, 1, 1, 1, 3, 3, 5, 5],
+									   [1, 1, 1, 1, 1, 1, 1, 3, 3, 5, 5],
+									   [2, 1, 1, 1, 1, 2, 2, 3, 3, 5, 5]])
 
     	# Dictionary with keys (material ids) to diffusion coefficients
 		self._D = {1: [1.255, 0.211], 
@@ -83,7 +80,8 @@ class LRAProblem:
 		self._materials = zeros([self._num_x_cells, self._num_y_cells], float)
 		for i in range(self._num_x_cells):
 			for j in range(self._num_y_cells):
-				self._materials[j,i] = self._material_ids[j  / self._num_mesh_x][i / self._num_mesh_y]
+				self._materials[j,i] = self._material_ids[j  / \
+										self._num_mesh_x][i / self._num_mesh_y]
 
 		# Sparse destruction matrix used for solver (initialized empty)
 		self._M = lil_matrix((10, 10))
@@ -96,7 +94,8 @@ class LRAProblem:
 		'''	
 		
 		figure()
-		pcolor(linspace(self._xmin, self._xmax, 12), linspace(self._ymin, self._ymax, 12), \
+		pcolor(linspace(self._xmin, self._xmax, 12), \
+				linspace(self._ymin, self._ymax, 12), \
 				self._material_ids.T, edgecolors='k', linewidths=1)
 		axis([0, 165, 0, 165])
 		title('2D LRA Benchmark Materials')
@@ -109,7 +108,8 @@ class LRAProblem:
 		'''	
 
 		figure()
-		pcolor(linspace(0, 165, self._num_x_cells), linspace(0, 165, self._num_y_cells), \
+		pcolor(linspace(0, 165, self._num_x_cells), \
+				linspace(0, 165, self._num_y_cells), \
 				self._materials.T, edgecolors='k', linewidths=0.25)
 		axis([0, 165, 0, 165])
 		title('2D LRA Benchmark Mesh')
@@ -135,7 +135,8 @@ class LRAProblem:
 		'''
 		'''
 
-		# Create arrays for each of the diagonals of the production and destruction matrices
+		# Create arrays for each of the diagonals of the 
+		# production and destruction matrices
 		size = 2 * self._num_x_cells * self._num_y_cells
 		M_diag = np.zeros(size)
 		M_udiag = np.zeros(size)
@@ -146,7 +147,7 @@ class LRAProblem:
 		F_diag1 = np.zeros(size)
 		F_diag2 = np.zeros(size)
 		
-
+		# Loop over all cells in the mesh
 		for i in range(size):
 
 			# energy group 1
@@ -157,23 +158,27 @@ class LRAProblem:
 
 				# 2D lower - leakage from top cell
 				if y > 0:
-					M_2ldiag[i-self._num_x_cells] = -self._dx * self.computeDCouple(self._D[mat_id][0], \
-												self._D[self._materials[y-1,x]][0], self._dy)
+					M_2ldiag[i-self._num_x_cells] = -self._dx * \
+								self.computeDCouple(self._D[mat_id][0], \
+								self._D[self._materials[y-1,x]][0], self._dy)
 
 				# lower - leakage from left cell
 				if x > 0:
-					M_ldiag[i-1] = -self._dy * self.computeDCouple(self._D[mat_id][0], \
-												self._D[self._materials[y,x-1]][0], self._dx)
+					M_ldiag[i-1] = -self._dy * \
+								self.computeDCouple(self._D[mat_id][0], \
+								self._D[self._materials[y,x-1]][0], self._dx)
 
 				# 2D upper - leakage from bottom cell
 				if y < self._num_y_cells-1:
-					M_2udiag[i+self._num_x_cells] = -self._dx * self.computeDCouple(self._D[mat_id][0], \
-												self._D[self._materials[y+1,x]][0], self._dy)
+					M_2udiag[i+self._num_x_cells] = -self._dx * \
+								self.computeDCouple(self._D[mat_id][0], \
+								self._D[self._materials[y+1,x]][0], self._dy)
 
 				# upper - leakage from right cell
 				if x < self._num_x_cells-1:
-					M_udiag[i+1] = -self._dy * self.computeDCouple(self._D[mat_id][0], \
-												self._D[self._materials[y,x+1]][0], self._dx)
+					M_udiag[i+1] = -self._dy * \
+								self.computeDCouple(self._D[mat_id][0], \
+								self._D[self._materials[y,x+1]][0], self._dx)
 
 				# diagonal
 				M_diag[i] = (self._SigmaA[mat_id][0] + \
@@ -182,33 +187,37 @@ class LRAProblem:
 
 				# leakage into cell above
 				if y > 0:
-					M_diag[i] += self._dx * self.computeDCouple(self._D[mat_id][0], \
-												self._D[self._materials[y-1,x]][0], self._dy)
+					M_diag[i] += self._dx * \
+								self.computeDCouple(self._D[mat_id][0], \
+								self._D[self._materials[y-1,x]][0], self._dy)
 
 				# leakage into cell below
 				if y < self._num_y_cells-1:
-					M_diag[i] += self._dx * self.computeDCouple(self._D[mat_id][0], \
-												self._D[self._materials[y+1,x]][0], self._dy)
+					M_diag[i] += self._dx * \
+								self.computeDCouple(self._D[mat_id][0], \
+								self._D[self._materials[y+1,x]][0], self._dy)
 
 				# leakage into cell to the left
 				if x > 0:
-					M_diag[i] += self._dy * self.computeDCouple(self._D[mat_id][0], \
-												self._D[self._materials[y,x-1]][0], self._dy)
+					M_diag[i] += self._dy * \
+								self.computeDCouple(self._D[mat_id][0], \
+								self._D[self._materials[y,x-1]][0], self._dy)
 
 				# leakage into cell to the right
 				if x < self._num_x_cells-1:
-					M_diag[i] += self._dy * self.computeDCouple(self._D[mat_id][0], \
-												self._D[self._materials[y,x+1]][0], self._dy)
+					M_diag[i] += self._dy * \
+								self.computeDCouple(self._D[mat_id][0], \
+								self._D[self._materials[y,x+1]][0], self._dy)
 
-				# leakage into vacuum for cells at the topmost edge of the geometry
+				# leakage into vacuum for cells at top edge of the geometry
 				if (y == 0):
 					M_diag[i] += (2.0 * self._D[mat_id][0] / self._dx) * \
-									(1.0 / (1.0 + (4.0 *  self._D[mat_id][0] / self._dx)))
+						(1.0 / (1.0 + (4.0 *  self._D[mat_id][0] / self._dx)))
 
-				# leakage into vacuum for cells at the rightmost edge of the geometry
+				# leakage into vacuum for cells at right edge of the geometry
 				if (x == self._num_x_cells-1):
 					M_diag[i] += (2.0 * self._D[mat_id][0] / self._dy) * \
-									(1.0 / (1.0 + (4.0 *  self._D[mat_id][0] / self._dx)))
+						(1.0 / (1.0 + (4.0 *  self._D[mat_id][0] / self._dx)))
 
 				# fission production
 				F_diag1[i] = self._NuSigmaF[mat_id][0]
@@ -223,67 +232,77 @@ class LRAProblem:
 				mat_id = self._materials[y,x]
 
 				# Group 1 scattering into group 2
-				M_3ldiag[i-size/2] = -self._SigmaS21[mat_id] * self._dx * self._dy
+				M_3ldiag[i-size/2] = -self._SigmaS21[mat_id] * \
+												self._dx * self._dy
 
 				# 2self._D lower - leakage from top cell
 				if y > 0:
-					M_2ldiag[i-self._num_x_cells] = -self._dx * self.computeDCouple(self._D[mat_id][1], \
-												self._D[self._materials[y-1,x]][1], self._dy)
+					M_2ldiag[i-self._num_x_cells] = -self._dx * \
+								self.computeDCouple(self._D[mat_id][1], \
+								self._D[self._materials[y-1,x]][1], self._dy)
 
 				# lower - leakage from left cell
 				if x > 0:
-					M_ldiag[i-1] = -self._dy * self.computeDCouple(self._D[mat_id][1], \
-												self._D[self._materials[y,x-1]][1], self._dx)
+					M_ldiag[i-1] = -self._dy * \
+								self.computeDCouple(self._D[mat_id][1], \
+								self._D[self._materials[y,x-1]][1], self._dx)
 
 				# 2self._D upper - leakage from bottom cell
 				if y < self._num_y_cells-1:
-					M_2udiag[i+self._num_x_cells] = -self._dx * self.computeDCouple(self._D[mat_id][1], \
-												self._D[self._materials[y+1,x]][1], self._dy)
+					M_2udiag[i+self._num_x_cells] = -self._dx * \
+								self.computeDCouple(self._D[mat_id][1], \
+								self._D[self._materials[y+1,x]][1], self._dy)
 
 				# upper - leakage from right cell
 				if x < self._num_x_cells-1:
-					M_udiag[i+1] = -self._dy * self.computeDCouple(self._D[mat_id][1], \
-												self._D[self._materials[y,x+1]][1], self._dx)
+					M_udiag[i+1] = -self._dy * \
+								self.computeDCouple(self._D[mat_id][1], \
+								self._D[self._materials[y,x+1]][1], self._dx)
 
 				# diagonal
 				M_diag[i] = self._SigmaA[mat_id][1] * self._dx * self._dy
 
 				# leakage into cell above
 				if y > 0:
-					M_diag[i] += self._dx * self.computeDCouple(self._D[mat_id][1], \
-												self._D[self._materials[y-1,x]][1], self._dy)
+					M_diag[i] += self._dx * \
+								self.computeDCouple(self._D[mat_id][1], \
+								self._D[self._materials[y-1,x]][1], self._dy)
 
 				# leakage into cell below
 				if y < self._num_y_cells-1:
-					M_diag[i] += self._dx * self.computeDCouple(self._D[mat_id][1], \
-												self._D[self._materials[y+1,x]][1], self._dy)
+					M_diag[i] += self._dx * \
+								self.computeDCouple(self._D[mat_id][1], \
+								self._D[self._materials[y+1,x]][1], self._dy)
 
 				# leakage into cell to the left
 				if x > 0:
-					M_diag[i] += self._dy * self.computeDCouple(self._D[mat_id][1], \
-												self._D[self._materials[y,x-1]][1], self._dy)
+					M_diag[i] += self._dy * \
+								self.computeDCouple(self._D[mat_id][1], \
+								self._D[self._materials[y,x-1]][1], self._dy)
 
 				# leakage into cell to the right
 				if x < self._num_x_cells-1:
-					M_diag[i] += self._dy * self.computeDCouple(self._D[mat_id][1], \
-												self._D[self._materials[y,x+1]][1], self._dy)
+					M_diag[i] += self._dy * \
+								self.computeDCouple(self._D[mat_id][1], \
+								self._D[self._materials[y,x+1]][1], self._dy)
 
-				# leakage into vacuum for cells at the topmost edge of the geometry
+				# leakage into vacuum for cells at top edge of the geometry
 				if (y == 0):
 					M_diag[i] += (2.0 * self._D[mat_id][0] / self._dx) * \
-									(1.0 / (1.0 + (4.0 *  self._D[mat_id][1] / self._dx)))
+						(1.0 / (1.0 + (4.0 *  self._D[mat_id][1] / self._dx)))
 
-				# leakage into vacuum for cells at the rightmost edge of the geometry
+				# leakage into vacuum for cells at right edge of the geometry
 				if (x == self._num_x_cells-1):
 					M_diag[i] += (2.0 * self._D[mat_id][0] / self._dy) * \
-									(1.0 / (1.0 + (4.0 *  self._D[mat_id][1] / self._dy)))
+						(1.0 / (1.0 + (4.0 *  self._D[mat_id][1] / self._dy)))
 
 
 		# Construct sparse diagonal matrices
-		self._M = dia_matrix(([M_diag, M_udiag, M_2udiag, M_ldiag, M_2ldiag, M_3ldiag], \
-								[0, 1, self._num_x_cells, -1, -self._num_x_cells, -size/2]), \
-								shape=(size, size))
-		self._F = dia_matrix(([F_diag1, F_diag2], [0, size/2]), shape=(size, size))
+		self._M = dia_matrix(([M_diag, M_udiag, M_2udiag, M_ldiag, M_2ldiag, 
+							M_3ldiag], [0, 1, self._num_x_cells, -1, \
+							-self._num_x_cells, -size/2]), shape=(size, size))
+		self._F = dia_matrix(([F_diag1, F_diag2], [0, size/2]), \
+												shape=(size, size))
 
 
 def powerIteration(M, F, max_iters, tol):
@@ -302,7 +321,8 @@ def powerIteration(M, F, max_iters, tol):
 	for i in range(max_iters):
 
 		# Update flux vector
-		phi_new = spsolve(M.tocsr(), ((1. / keff) * F * phi))
+		phi_new = gmres(M.tocsr(), ((1. / keff) * F * phi))
+		phi_new = phi_new[0][:]
 
 		# Normalize new flux
 		phi_new = phi_new / norm(phi_new)
@@ -311,40 +331,47 @@ def powerIteration(M, F, max_iters, tol):
 		source_new = F * phi_new
 		source_old = F * phi
 
-		keff_new = keff * np.vdot(source_new, source_new) / np.vdot(source_old, source_old)
-			
+		tot_source_new = sum(source_new)
+		tot_source_old = sum(source_old)
+
+		keff_new = tot_source_new / tot_source_old
+
 		# Compute residuals
-		phi_res.append(norm(phi_new - phi))
+		phi_res.append(norm(keff_new * source_old - source_new))
 		keff_res.append(abs(keff_new - keff) / keff)
 
-		print 'Power iteration: i = ' + str(i) + '  phi_res = ' + \
-			            str(phi_res[i-1]) + '  keff_res = ' + str(keff_res[i-1]) \
+		print 'Power iteration: i = %d	phi_res = %1E	keff_res = %1E' % (i, phi_res[i-1], keff_res[i-1])
 
 		# Check convergence
 		if phi_res[i] < tol and keff_res[i] < tol:
 			break
 		else:
 			phi = phi_new
-			if (i > 5):
+			if (i > 1):
 				keff = keff_new
 
-	print 'Converged to keff = ' + str(keff) + ' (tol = ' + str(tolerance) + \
-								') in ' + str(i) + ' iterations.'
+	print 'Converged to keff = %1.6f in %1d iterations for tol = %1E' % (keff, i, tolerance)
 
 	# Plot the thermal and fast flux and convergence rate
 	fig = figure()
-	phi_g1 = np.reshape(phi[0:LRA._num_y_cells * LRA._num_x_cells], (-LRA._num_y_cells, LRA._num_y_cells), order='A')
-	phi_g2 = np.reshape(phi[LRA._num_y_cells * LRA._num_x_cells:], (-LRA._num_y_cells, LRA._num_y_cells), order='A')
+	phi_g1 = np.reshape(phi[0:LRA._num_y_cells * LRA._num_x_cells], \
+						(-LRA._num_y_cells, LRA._num_y_cells), order='A')
+	phi_g2 = np.reshape(phi[LRA._num_y_cells * LRA._num_x_cells:], \
+						(-LRA._num_y_cells, LRA._num_y_cells), order='A')
 	phi_g1 = np.flipud(phi_g1)
 	phi_g2 = np.flipud(phi_g2)
 	
 	fig.add_subplot(221)
-	pcolor(linspace(0, 165, LRA._num_x_cells), linspace(0, 165, LRA._num_y_cells), phi_g1)
+	pcolor(linspace(0, 165, LRA._num_x_cells), \
+							linspace(0, 165, LRA._num_y_cells), phi_g1)
+	colorbar()	
 	axis([0, 165, 0, 165])
 	title('Group 1 (Fast) Flux')
 	
 	fig.add_subplot(222)
-	pcolor(linspace(0, 165, LRA._num_x_cells), linspace(0, 165, LRA._num_y_cells), phi_g2)
+	pcolor(linspace(0, 165, LRA._num_x_cells), \
+							linspace(0, 165, LRA._num_y_cells), phi_g2)
+	colorbar()
 	axis([0, 165, 0, 165])
 	title('Group 2 (Thermal) Flux')
 
@@ -404,7 +431,7 @@ def givens(H, c, s, g, n):
 
 
 
-def gmres(M, F, phi, keff, res, outer_iter, tol):
+def gmres_jfnk(M, F, phi, keff, res, outer_iter, tol):
 	
 	# Find the size of b
 	m = phi.size
@@ -504,7 +531,7 @@ if __name__ == '__main__':
 
     # Parse command line options
 	opts, args = getopt.getopt(sys.argv[1:], "t:n:psn", \
-									["num_mesh", "plot_mesh", "spy", "tolerance"])
+							["num_mesh", "plot_mesh", "spy", "tolerance"])
 
 	# Default arguments
 	num_mesh = 5
@@ -534,11 +561,11 @@ if __name__ == '__main__':
 	if spyMF:
 		LRA.spyMF()
 
+
 	phi = powerIteration(LRA._M, LRA._F, 200, tolerance)
-#	phi = powerIteration(LRA._M, LRA._F, 3, tolerance)
-#	phi = np.reshape(phi, (phi.size, 1))
 
 
+'''
 	# Guess initial keff
 	keff = 1.0
 
@@ -546,25 +573,29 @@ if __name__ == '__main__':
 #	phi = np.ones((LRA._M.shape[1], 1), dtype=np.float)
 #	phi = phi / np.linalg.norm(phi)
 
-'''
 	res = 5
 	outer_iter = 1000
 
-	phi = gmres(LRA._M, LRA._F, phi, keff, res, outer_iter, tolerance)
+#	phi = np.reshape(phi, (phi.size, 1))
+	phi = gmres_jfnk(LRA._M, LRA._F, phi, keff, res, outer_iter, tolerance)
 
 	fig = figure()
-	phi_g1 = np.reshape(phi[0:LRA._num_y_cells * LRA._num_x_cells], (-LRA._num_y_cells, LRA._num_y_cells), order='A')
-	phi_g2 = np.reshape(phi[LRA._num_y_cells * LRA._num_x_cells:], (-LRA._num_y_cells, LRA._num_y_cells), order='A')
+	phi_g1 = np.reshape(phi[0:LRA._num_y_cells * LRA._num_x_cells], \
+							(-LRA._num_y_cells, LRA._num_y_cells), order='A')
+	phi_g2 = np.reshape(phi[LRA._num_y_cells * LRA._num_x_cells:], \
+							(-LRA._num_y_cells, LRA._num_y_cells), order='A')
 	phi_g1 = np.flipud(phi_g1)
 	phi_g2 = np.flipud(phi_g2)
 	
 	fig.add_subplot(221)
-	pcolor(linspace(0, 165, LRA._num_x_cells), linspace(0, 165, LRA._num_y_cells), phi_g1)
+	pcolor(linspace(0, 165, LRA._num_x_cells), \
+						linspace(0, 165, LRA._num_y_cells), phi_g1)
 	axis([0, 165, 0, 165])
 	title('Group 1 (Fast) Flux')
 	
 	fig.add_subplot(222)
-	pcolor(linspace(0, 165, LRA._num_x_cells), linspace(0, 165, LRA._num_y_cells), phi_g2)
+	pcolor(linspace(0, 165, LRA._num_x_cells), \
+						linspace(0, 165, LRA._num_y_cells), phi_g2)
 	axis([0, 165, 0, 165])
 	title('Group 2 (Thermal) Flux')
 
