@@ -1,530 +1,369 @@
 import numpy as np
 from pylab import *
-from scipy.sparse import lil_matrix, dia_matrix
-from scipy.sparse.linalg import gmres
-from scipy.linalg import eig
+from scipy.sparse import lil_matrix, dia_matrix, hstack, vstack
+from scipy.sparse.linalg import gmres, spilu, LinearOperator
 from os import *
 from sys import *
 import getopt
 
+import LRAProblem as LRA
+	
 
+class Solver(object):
 
-class LRAProblem:
-
-	def __init__(self, num_mesh_x=5, num_mesh_y=5):
-		'''
-		Initialize LRA geometry and materials
-		'''
-
-		# Define the boundaries of the geometry [cm]		
-		self._xmin = 0.;
-		self._xmax = 165.;
-		self._ymin = 0.;
-		self._ymax = 165.;
-
-    	# number of mesh per coarse grid cell in LRA problem 
-		self._num_mesh_x = num_mesh_x
-		self._num_mesh_y = num_mesh_y
-
-		# mesh spacing - each LRA coarse grid cell is 5cm x 5cm
-		self._dx = 5. / self._num_mesh_x
-		self._dy = 5. / self._num_mesh_y
-
-		# number of mesh cells in x,y dimension for entire LRA geometry
-		self._num_x_cells = self._num_mesh_x * 11
-		self._num_y_cells = self._num_mesh_y * 11
-
-    	# Create a numpy array for materials ids
-		self._material_ids = np.array([[5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5],
-									   [5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5],
-									   [3, 3, 3, 3, 3, 3, 3, 5, 5, 5, 5],
-									   [3, 3, 3, 3, 3, 3, 3, 4, 5, 5, 5],
-									   [2, 1, 1, 1, 1, 2, 2, 3, 3, 5, 5],
-									   [2, 1, 1, 1, 1, 2, 2, 3, 3, 5, 5],
-									   [1, 1, 1, 1, 1, 1, 1, 3, 3, 5, 5],
-									   [1, 1, 1, 1, 1, 1, 1, 3, 3, 5, 5],
-									   [1, 1, 1, 1, 1, 1, 1, 3, 3, 5, 5],
-									   [1, 1, 1, 1, 1, 1, 1, 3, 3, 5, 5],
-									   [2, 1, 1, 1, 1, 2, 2, 3, 3, 5, 5]])
-
-    	# Dictionary with keys (material ids) to diffusion coefficients
-		self._D = {1: [1.255, 0.211], 
-         		   2: [1.268, 0.1902],
-         		   3: [1.259, 0.2091],
-         		   4: [1.259, 0.2091],
-         		   5: [1.257, 0.1592]}
-
-    	# Dictionary with keys (material ids) to absorption cross-sections
-		self._SigmaA = {1: [0.008252, 0.1003], 
-                        2: [0.007181, 0.07047],
-              			3: [0.008002, 0.08344],
-              			4: [0.008002, 0.073324],
-              			5: [0.0006034, 0.01911]}
-
-    	# Dictionary with keys (material ids) to fission cross-sections
-		self._NuSigmaF = {1: [0.004602, 0.1091], 
-                		  2: [0.004609, 0.08675],
-                		  3: [0.004663, 0.1021],
-                		  4: [0.004663, 0.1021],
-               		 	  5: [0., 0.]}
-
-    	# Dictionary with keys (material ids) to group 2 to 1 scattering           
-    	# cross-sections
-		self._SigmaS21 = {1: 0.02533, 
-                		  2: 0.02767,
-                		  3: 0.02617,
-                		  4: 0.02617,
-                		  5: 0.04754}
-
-    	# Array with the material id for each fine mesh cell
-		self._materials = zeros([self._num_x_cells, self._num_y_cells], float)
-		for i in range(self._num_x_cells):
-			for j in range(self._num_y_cells):
-				self._materials[j,i] = self._material_ids[j  / \
-										self._num_mesh_x][i / self._num_mesh_y]
-
-		# Sparse destruction matrix used for solver (initialized empty)
-		self._M = lil_matrix((10, 10))
-		self._F = lil_matrix((10, 10))
-
-
-	def plotMaterials(self):
-		'''
-		Plot a coarse 2D grid of the materials in the LRA problem
-		'''	
+	def __init__(self):
 		
-		figure()
-		pcolor(linspace(self._xmin, self._xmax, 12), \
-				linspace(self._ymin, self._ymax, 12), \
-				self._material_ids.T, edgecolors='k', linewidths=1)
-		axis([0, 165, 0, 165])
-		title('2D LRA Benchmark Materials')
-		show()
+		# Full weighting stencils for multigrid
+		self._R_interior = np.array([[0.25, 0.5, 0.25], \
+									 [0.5, 1.0, 0.5], \
+									 [0.25, 0.5, 0.25]])
+		self._R_interior *= (1 / 4.)
 
+		self._R_tl = np.array([[1., 0.5], \
+							   [0.5, 0.25]])
+		self._R_tl *= (1. / 2.25)
 
-	def plotMesh(self):
-		'''
-		Plot the fine 2D mesh used to solve the LRA problem
-		'''	
+		self._R_tr = np.array([[0.5, 1.], \
+							   [0.25, .5]])
+		self._R_tr *= (1. / 2.25)
 
-		figure()
-		pcolor(linspace(0, 165, self._num_x_cells), \
-				linspace(0, 165, self._num_y_cells), \
-				self._materials.T, edgecolors='k', linewidths=0.25)
-		axis([0, 165, 0, 165])
-		title('2D LRA Benchmark Mesh')
-		show()
+		self._R_bl = np.array([[0.5, 0.25], \
+							   [1., 0.5]])
+		self._R_bl *= (1. / 2.25)
 
+		self._R_br = np.array([[0.25, 0.5], \
+							   [0.5, 1.]])
+		self._R_br *= (1. / 2.25)
 
-	def spyMF(self):
-		fig = figure()
-		fig.add_subplot(121)		
-		spy(self._M)
-		fig.add_subplot(122)		
-		spy(self._F)
+		self._R_top = np.array([[0.5, 0.25], \
+								[1., 0.5], \
+								[0.5, 0.25]])
+		self._R_top *= (1. / 3.)		
 
+		self._R_bottom = np.array([[0.5, 0.25], \
+								   [0.5, 1.], \
+								   [0.25, 0.5]])
+		self._R_bottom *= (1. / 3.)
 
-	def computeDCouple(self, D1, D2, delta):
-		'''
-		Compute the diffusion coefficient coupling two adjacent cells
-		'''
-		return (2.0 * D1 * D1) / (delta * (D1 + D2))
-
-
-	def setupMFMatrices(self):
-		'''
-		'''
-
-		# Create arrays for each of the diagonals of the 
-		# production and destruction matrices
-		size = 2 * self._num_x_cells * self._num_y_cells
-		M_diag = np.zeros(size)
-		M_udiag = np.zeros(size)
-		M_2udiag = np.zeros(size)
-		M_ldiag = np.zeros(size)
-		M_2ldiag = np.zeros(size)
-		M_3ldiag = np.zeros(size)
-		F_diag1 = np.zeros(size)
-		F_diag2 = np.zeros(size)
 		
-		# Loop over all cells in the mesh
-		for i in range(size):
 
-			# energy group 1
-			if i < size / 2:
-				x = i % self._num_x_cells
-				y = i / self._num_y_cells
-				mat_id = self._materials[y,x]
+	def powerIteration(self, M, F, max_iters, tol, precond=False):
+		'''
+		Perform power iteration for the keff eigenvalue problem.
+		Converges the source to a specified tolerance and plots the
+		fast and thermal flux and the residual at each iteration
+		'''
 
-				# 2D lower - leakage from top cell
-				if y > 0:
-					M_2ldiag[i-self._num_x_cells] = -self._dx * \
-								self.computeDCouple(self._D[mat_id][0], \
-								self._D[self._materials[y-1,x]][0], self._dy)
+		# Guess initial keff
+		keff = 1.0
 
-				# lower - leakage from left cell
-				if x > 0:
-					M_ldiag[i-1] = -self._dy * \
-								self.computeDCouple(self._D[mat_id][0], \
-								self._D[self._materials[y,x-1]][0], self._dx)
+		# Guess initial flux and normalize it
+		phi = np.ones((M.shape[1], 1))
+		phi = phi / norm(phi)
 
-				# 2D upper - leakage from bottom cell
-				if y < self._num_y_cells-1:
-					M_2udiag[i+self._num_x_cells] = -self._dx * \
-								self.computeDCouple(self._D[mat_id][0], \
-								self._D[self._materials[y+1,x]][0], self._dy)
+		# Array for phi_res and keff+res
+		phi_res = []
+		keff_res = []
 
-				# upper - leakage from right cell
-				if x < self._num_x_cells-1:
-					M_udiag[i+1] = -self._dy * \
-								self.computeDCouple(self._D[mat_id][0], \
-								self._D[self._materials[y,x+1]][0], self._dx)
+		for i in range(max_iters):
 
-				# diagonal
-				M_diag[i] = (self._SigmaA[mat_id][0] + \
-                                self._SigmaS21[mat_id]) * self._dx * self._dy
+			# Update flux vector
 
-
-				# leakage into cell above
-				if y > 0:
-					M_diag[i] += self._dx * \
-								self.computeDCouple(self._D[mat_id][0], \
-								self._D[self._materials[y-1,x]][0], self._dy)
-
-				# leakage into cell below
-				if y < self._num_y_cells-1:
-					M_diag[i] += self._dx * \
-								self.computeDCouple(self._D[mat_id][0], \
-								self._D[self._materials[y+1,x]][0], self._dy)
-
-				# leakage into cell to the left
-				if x > 0:
-					M_diag[i] += self._dy * \
-								self.computeDCouple(self._D[mat_id][0], \
-								self._D[self._materials[y,x-1]][0], self._dy)
-
-				# leakage into cell to the right
-				if x < self._num_x_cells-1:
-					M_diag[i] += self._dy * \
-								self.computeDCouple(self._D[mat_id][0], \
-								self._D[self._materials[y,x+1]][0], self._dy)
-
-				# leakage into vacuum for cells at top edge of the geometry
-				if (y == 0):
-					M_diag[i] += (2.0 * self._D[mat_id][0] / self._dx) * \
-						(1.0 / (1.0 + (4.0 *  self._D[mat_id][0] / self._dx)))
-
-				# leakage into vacuum for cells at right edge of the geometry
-				if (x == self._num_x_cells-1):
-					M_diag[i] += (2.0 * self._D[mat_id][0] / self._dy) * \
-						(1.0 / (1.0 + (4.0 *  self._D[mat_id][0] / self._dx)))
-
-				# fission production
-				F_diag1[i] = self._NuSigmaF[mat_id][0]
-
-				# fission production
-				F_diag2[i+size/2] = self._NuSigmaF[mat_id][1]
-
-			# energy group 2
+			# Preconditioned GMRES
+			if precond:
+				P = spilu(M.tocsc(), drop_tol=1e-5)
+				D_x = lambda x: P.solve(x)
+				D = LinearOperator((M.shape[0], M.shape[0]), D_x)
+				phi_new = gmres(M.tocsr(), ((1. / keff) * F * phi), M=D)
+			# Unpreconditioned GMRES
 			else:
-				x = (i-(size/2)) % self._num_x_cells
-				y = (i-(size/2)) / self._num_y_cells
-				mat_id = self._materials[y,x]
+				phi_new = gmres(M.tocsr(), ((1. / keff) * F * phi))
 
-				# Group 1 scattering into group 2
-				M_3ldiag[i-size/2] = -self._SigmaS21[mat_id] * \
-												self._dx * self._dy
+			phi_new = phi_new[0][:]
 
-				# 2self._D lower - leakage from top cell
-				if y > 0:
-					M_2ldiag[i-self._num_x_cells] = -self._dx * \
-								self.computeDCouple(self._D[mat_id][1], \
-								self._D[self._materials[y-1,x]][1], self._dy)
-
-				# lower - leakage from left cell
-				if x > 0:
-					M_ldiag[i-1] = -self._dy * \
-								self.computeDCouple(self._D[mat_id][1], \
-								self._D[self._materials[y,x-1]][1], self._dx)
-
-				# 2self._D upper - leakage from bottom cell
-				if y < self._num_y_cells-1:
-					M_2udiag[i+self._num_x_cells] = -self._dx * \
-								self.computeDCouple(self._D[mat_id][1], \
-								self._D[self._materials[y+1,x]][1], self._dy)
-
-				# upper - leakage from right cell
-				if x < self._num_x_cells-1:
-					M_udiag[i+1] = -self._dy * \
-								self.computeDCouple(self._D[mat_id][1], \
-								self._D[self._materials[y,x+1]][1], self._dx)
-
-				# diagonal
-				M_diag[i] = self._SigmaA[mat_id][1] * self._dx * self._dy
-
-				# leakage into cell above
-				if y > 0:
-					M_diag[i] += self._dx * \
-								self.computeDCouple(self._D[mat_id][1], \
-								self._D[self._materials[y-1,x]][1], self._dy)
-
-				# leakage into cell below
-				if y < self._num_y_cells-1:
-					M_diag[i] += self._dx * \
-								self.computeDCouple(self._D[mat_id][1], \
-								self._D[self._materials[y+1,x]][1], self._dy)
-
-				# leakage into cell to the left
-				if x > 0:
-					M_diag[i] += self._dy * \
-								self.computeDCouple(self._D[mat_id][1], \
-								self._D[self._materials[y,x-1]][1], self._dy)
-
-				# leakage into cell to the right
-				if x < self._num_x_cells-1:
-					M_diag[i] += self._dy * \
-								self.computeDCouple(self._D[mat_id][1], \
-								self._D[self._materials[y,x+1]][1], self._dy)
-
-				# leakage into vacuum for cells at top edge of the geometry
-				if (y == 0):
-					M_diag[i] += (2.0 * self._D[mat_id][0] / self._dx) * \
-						(1.0 / (1.0 + (4.0 *  self._D[mat_id][1] / self._dx)))
-
-				# leakage into vacuum for cells at right edge of the geometry
-				if (x == self._num_x_cells-1):
-					M_diag[i] += (2.0 * self._D[mat_id][0] / self._dy) * \
-						(1.0 / (1.0 + (4.0 *  self._D[mat_id][1] / self._dy)))
-
-
-		# Construct sparse diagonal matrices
-		self._M = dia_matrix(([M_diag, M_udiag, M_2udiag, M_ldiag, M_2ldiag, 
-							M_3ldiag], [0, 1, self._num_x_cells, -1, \
-							-self._num_x_cells, -size/2]), shape=(size, size))
-		self._F = dia_matrix(([F_diag1, F_diag2], [0, size/2]), \
-												shape=(size, size))
-
-
-def powerIteration(M, F, max_iters, tol):
-
-	# Guess initial keff
-	keff = 1.0
-
-	# Guess initial flux and normalize it
-	phi = np.ones((M.shape[1], 1))
-	phi = phi / norm(phi)
-
-	# Array for phi_res and keff+res
-	phi_res = []
-	keff_res = []
-
-	for i in range(max_iters):
-
-		# Update flux vector
-		phi_new = gmres(M.tocsr(), ((1. / keff) * F * phi))
-		phi_new = phi_new[0][:]
-
-		# Normalize new flux
-		phi_new = phi_new / norm(phi_new)
+			# Normalize new flux
+			phi_new = phi_new / norm(phi_new)
 	
-		# Update keff
-		source_new = F * phi_new
-		source_old = F * phi
+			# Update keff
+			source_new = F * phi_new
+			source_old = F * phi
 
-		tot_source_new = sum(source_new)
-		tot_source_old = sum(source_old)
+			tot_source_new = sum(source_new)
+			tot_source_old = sum(source_old)
 
-		keff_new = tot_source_new / tot_source_old
+			keff_new = tot_source_new / tot_source_old
 
-		# Compute residuals
-		phi_res.append(norm(keff_new * source_old - source_new))
-		keff_res.append(abs(keff_new - keff) / keff)
+			# Compute residuals
+			phi_res.append(norm(source_old - source_new))
+			keff_res.append(abs(keff_new - keff) / keff)
 
-		print 'Power iteration: i = %d	phi_res = %1E	keff_res = %1E' % (i, phi_res[i-1], keff_res[i-1])
+			print 'Power iteration: i = %d	phi_res = %1E	keff_res = %1E' \
+					% (i, phi_res[i-1], keff_res[i-1])
 
-		# Check convergence
-		if phi_res[i] < tol and keff_res[i] < tol:
-			break
-		else:
-			phi = phi_new
-			if (i > 1):
-				keff = keff_new
-
-	print 'Converged to keff = %1.6f in %1d iterations for tol = %1E' % (keff, i, tolerance)
-
-	# Plot the thermal and fast flux and convergence rate
-	fig = figure()
-	phi_g1 = np.reshape(phi[0:LRA._num_y_cells * LRA._num_x_cells], \
-						(-LRA._num_y_cells, LRA._num_y_cells), order='A')
-	phi_g2 = np.reshape(phi[LRA._num_y_cells * LRA._num_x_cells:], \
-						(-LRA._num_y_cells, LRA._num_y_cells), order='A')
-	phi_g1 = np.flipud(phi_g1)
-	phi_g2 = np.flipud(phi_g2)
-	
-	fig.add_subplot(221)
-	pcolor(linspace(0, 165, LRA._num_x_cells), \
-							linspace(0, 165, LRA._num_y_cells), phi_g1)
-	colorbar()	
-	axis([0, 165, 0, 165])
-	title('Group 1 (Fast) Flux')
-	
-	fig.add_subplot(222)
-	pcolor(linspace(0, 165, LRA._num_x_cells), \
-							linspace(0, 165, LRA._num_y_cells), phi_g2)
-	colorbar()
-	axis([0, 165, 0, 165])
-	title('Group 2 (Thermal) Flux')
-
-	fig.add_subplot(223)
-	plot(np.array(range(i+1)), np.array(phi_res))
-	plot(np.array(range(i+1)), np.array(keff_res))
-	legend(['flux', 'keff'])
-	yscale('log')
-	xlabel('iteration #')
-	ylabel('residual')
-	title('Residuals')
-
-	show()
-
-	return phi
-
-
-
-def givens(H, c, s, g, n):
-
-	# Apply all previous rotations to new column	
-	for i in range(n):
-	
-		# Apply rotation to row i
-		tmp1 = c[i] * H[i,n] - s[i] * H[i+1,n]
-		tmp2 = s[i] * H[i,n] + c[i] * H[i+1,n]
-
-		# Transfer computed values back to matrix
-		H[i,n] = tmp1
-		H[i+1,n] = tmp2
-
-	# Compute cos and sin for new rotation
-	r = sqrt(H[n,n]**2 + H[n+1,n]**2)
-	c[n] = H[n,n] / r
-	s[n] = -H[n+1,n] / r
-
-	# Apply new rotation to new column
-	tmp1 = c[n] * H[n,n] - s[n] * H[n+1,n]
-	tmp2 = s[n] * H[n,n] + c[n] * H[n+1,n]
-
-	# Transfer computed values back to matrix
-	H[n,n] = tmp1
-	H[n+1,n] = tmp2
-
-	# Zero out sub-diagonal (to correct for roundoff)
-	H[n+1,n] = 0.0
-
-	# Apply new rotation to g
-	tmp1 = c[n] * g[n] - s[n] * g[n+1]
-	tmp2 = s[n] * g[n] + c[n] * g[n+1]
-
-	g[n] = tmp1
-	g[n+1] = tmp2
-
-	return
-
-
-
-
-def gmres_jfnk(M, F, phi, keff, res, outer_iter, tol):
-	
-	# Find the size of b
-	m = phi.size
-
-	Q = np.zeros((m, res+1),dtype=np.float)
-	H = np.zeros((res+1, res), dtype=np.float)
-	err = np.ones((outer_iter*res, 1), dtype=np.float)
-	c = np.zeros((res+1, 1), dtype=np.float)
-	s = np.zeros((res+1, 1), dtype=np.float)
-
-	for k in range(outer_iter):
-		
-		print 'phi.shape = ' + str(phi.shape)
-
-		b = (1. / keff) * F * phi
-		r = b - M * phi
-		beta = np.linalg.norm(r)
-
-		g = np.zeros((res+1, 1))
-		g[0] = beta
-
-		print 'beta = ' + str(beta)
-
-		# Check for convergence
-		if beta < tol:
-			break
-
-		# Compute first Q
-		Q[:,0] = r.T / beta
-
-		# GMRES	on the residual error
-		for n in range(res):
-
-			print 'n = ' + str(n)			
-
-			# Arnoldi
-			y = Q[:,n]
-			v = M * y
-			normv1 = np.linalg.norm(v)
-
-			# Loop over previous vectors
-			for j in range(n):
-				# Orthogonal projection of A onto new Krylov subspace
-				# H = Q'AQ
-				H[j,n] = np.vdot(Q[:,j], v)
-				
-				# Equation 33.4 in Trefethen
-				v = v - H[j,n] * Q[:,j]
-
-			# Compute new H
-			H[n+1,n] = norm(v)
-			normv2 = H[n+1,n]
-
-			# May need to reorthogonalize here
-
-			# Compute next column of Q
-			Q[:,n+1] = v.T / H[n+1,n]
-
-			# Apply Givens rotation to new column of H
-			givens(H, c, s, g, n)
-
-			# Compute the error for this outer/inner iteration pair
-			err[n+res*(k-1)] = abs(g[n+1])
-			
-			# Check for convergence
-			if (err[n+res*(k-1)] < tol):
-				print 'GMRES converged to ' + str(tol)
+			# Check convergence
+			if phi_res[i] < tol and keff_res[i] < tol:
+				print 'Power iteration converged in %1d iters with keff = %1.5f' \
+																		% (i, keff)
 				break
+			else:
+				phi = phi_new
+				if (i > 1):
+					keff = keff_new
 
-		# Compute y
-		y = np.linalg.solve(H[:n,:n], g[:n])
+		# Plot the residuals of phi and keff at each iteration
+		fig = figure()
+		plot(np.array(range(i+1)), np.array(phi_res))
+		plot(np.array(range(i+1)), np.array(keff_res))
+		legend(['flux', 'keff'])
+		yscale('log')
+		xlabel('iteration #')
+		ylabel('residual')
+		title('Power Iteration Residuals')
 
-		print 'phi.shape = ' + str(phi.shape)
+		return phi
 
-		# Compute new phi
-		print 'type(Q) = ' + str(type(Q))
-		print 'dot(Q[:,:n], y).shape = ' + str(dot(Q[:,:n], y).shape)
-		phi = phi + dot(Q[:,:n], y)
-		phi = phi / np.linalg.norm(phi)
 
-		print 'phi.shape = ' + str(phi.shape)
+	def restrict(self, x):
+		'''
+		This restriction operator requires the number of mesh to be odd
+		'''
+
+		x = np.asarray(x)
+
+		mesh_size = int(sqrt(x.size))
+		new_mesh_size = int(ceil(mesh_size / 2.))
+
+		print 'x.size = %d, mesh_size = %d, new_mesh_size = %d' % (x.size, mesh_size, new_mesh_size)
 		
-		# Check convergence and break outer loop
-		if err[k*n-1] < tol:
-			print 'GMRES converged to ' + str(tol)
-			break
+		# Reshape x into 2D arrays corresponding to the geometric mesh
+		x = np.reshape(x, [mesh_size, mesh_size])
 
-		if k == outer_iter-1:
-			print 'GMRES did not converge'
+		# Allocate memory for the restricted x 
+		x_new = np.zeros((new_mesh_size, new_mesh_size))
 
-	return phi
+		# Restrict the x and b vectors
+		for i in range(new_mesh_size):
+			for j in range(new_mesh_size):
+				print 'i = %d, j = %d' % (i,j)
+				# top left corner
+				if (i is 0 and j is 0):
+					x_new[i,j] = sum(np.dot(self._R_tl, x[i*2:i*2+2,j*2:j*2+2]))
+				# top right corner
+				elif (i is 0 and j is new_mesh_size-1):
+					x_new[i,j] = sum(np.dot(self._R_tr, x[i*2:i*2+2, j*2:j*2+1]))
+				# top row but not a corner
+				elif (i is 0):
+					x_new[i,j] = sum(np.dot(self._R_top, x[i*2:i*2+2, j*2-1:j*2+2]))
+				# bottom left corner
+				elif (i is new_mesh_size-1 and j is 0):
+					print 'R_bl.shape = ' + str(self._R_bl.shape) + 'x[i*2-1:i*2, j*2:j*2+2].shape = ' + str(x[i*2-1:i*2+1, j*2:j*2+2].shape)
+					x_new[i,j] = sum(np.dot(self._R_bl, x[i*2-1:i*2+1, j*2:j*2+2]))
+				# bottom right corner
+				elif (i is new_mesh_size-1 and j is new_mesh_size-1):
+					x_new[i,j] = sum(np.dot(self._R_br, x[i*2:i*2+1, j*2:j*2+1]))
+				# bottom row but not a corner
+				elif (i is new_mesh_size-1):
+					x_new[i,j] = sum(np.dot(self._R_bottom, x[i*2:i*2+1, j*2-1:j*2+1]))
+				# interior cell
+				else:
+					x_new[i,j] = sum(np.dot(self._R_interior, x[i*2-1:i*2+2, j*2-1:j*2+1]))
 
 
+#				print 'i = %d, j = %d' % (i, j)
+#				x_new[i,j] = sum(np.dot(self._R, x[i*2:i*2+3, j*2:j*2+3]))
+
+		# Reshape x and b back into 1D arrays
+		x_new = np.ravel(x_new)
+
+		print 'x_new.size = %d, x_old.size = %d' % (x_new.size, x.size)
+
+		return x_new
+
+
+
+	def restrictAxb(self, A, x, b, m):
+		'''
+
+		'''
+
+		#######################################################################
+		#								Restrict M							  #
+		#######################################################################
+
+		# Extract the diagonals for M and F
+		# Pad with zeros at front for superdiagonals / back for subdiagonals
+		A = A.todense()
+		size = A.shape[0]
+
+		M_diag = [A[i,i] for i in range(size)]
+
+		M_udiag = zeros(size)
+		M_udiag[1:size] = [A[i,i+1] for i in range(size-1)]
+		M_udiag = np.asarray(M_udiag)
+
+		M_2udiag = zeros(size)
+		M_2udiag[m:size] = [A[i,i+m] for i in range(size-m)]
+		M_2udiag = np.asarray(M_2udiag)
+
+		M_ldiag = zeros(size)
+		M_ldiag[:size-1] = [A[i+1,i] for i in range(size-1)]
+		M_ldiag = np.asarray(M_ldiag)
+
+		M_2ldiag = zeros(size)
+		M_2ldiag[:size-m] = [A[i+m,i] for i in range(size-m)]
+		M_2ldiag = np.asarray(M_2ldiag)
+
+		M_3ldiag = zeros(size)
+		M_3ldiag[:size/2] = [A[i+size/2,i] for i in range(size/2)]
+		M_3ldiag = np.asarray(M_3ldiag)
+
+
+		# Restrict each energy group of each subdiagonal
+		print 'size = %d' % (size)
+		M_diag_egroup1_new = self.restrict(M_diag[:size/2])
+		M_diag_egroup2_new = self.restrict(M_diag[size/2:])
+		M_diag_new = np.append(M_diag_egroup1_new, M_diag_egroup2_new)
+
+		M_udiag_egroup1_new = self.restrict(M_udiag[:size/2.])
+		M_udiag_egroup2_new = self.restrict(M_udiag[size/2.:])
+		M_udiag_new = np.append(M_udiag_egroup1_new, M_udiag_egroup2_new)
+
+		M_2udiag_egroup1_new = self.restrict(M_2udiag[:size/2.])
+		M_2udiag_egroup2_new = self.restrict(M_2udiag[size/2.:])
+		M_2udiag_new = np.append(M_2udiag_egroup1_new, M_2udiag_egroup2_new)
+
+		M_ldiag_egroup1_new = self.restrict(M_ldiag[:size/2.])
+		M_ldiag_egroup2_new = self.restrict(M_ldiag[size/2.:])
+		M_ldiag_new = np.append(M_ldiag_egroup1_new, M_ldiag_egroup2_new)
+
+		M_2ldiag_egroup1_new = self.restrict(M_2ldiag[:size/2.])
+		M_2ldiag_egroup2_new = self.restrict(M_2ldiag[size/2.:])
+		M_2ldiag_new = np.append(M_2ldiag_egroup1_new, M_2ldiag_egroup2_new)
+
+		M_3ldiag_egroup1_new = self.restrict(M_3ldiag[:size/2.])
+		M_3ldiag_egroup2_new = self.restrict(M_3ldiag[size/2.:])
+		M_3ldiag_new = np.append(M_3ldiag_egroup1_new, M_3ldiag_egroup2_new)
+
+
+		# Construct the restricted A matrix
+		A_new = dia_matrix(([M_diag_new, M_udiag_new, M_2udiag_new, 
+							   M_ldiag_new, M_2ldiag_new, M_3ldiag_new], 
+							   [0, 1, m/2., -1, -m/2., -size/4]), \
+								shape=(size/4., size/4.))
+
+				
+		#######################################################################
+		#							Restrict x and b						  #
+		#######################################################################
+		# Reshape x and b into 2D arrays corresponding to the geometric mesh
+		# with separate arrays for each energy group
+		print 'x.size = %d, x.size/2 = %d' % (x.size, x.size/2)
+		print 'x[:(x.size/2)].shape = ' + str(x[:(x.size/2)].shape)
+		x_egroup1 = np.asarray(x[:(x.size/2)])
+		x_egroup2 = x[x.size/2:]
+		b_egroup1 = b[:x.size/2]
+		b_egroup2 = b[x.size/2:]
+
+		# Restrict each energy group of x and b
+		x_egroup1_new = self.restrict(x_egroup1)
+		x_egroup2_new = self.restrict(x_egroup2)
+		b_egroup1_new = self.restrict(b_egroup1)
+		b_egroup2_new = self.restrict(b_egroup2)
+
+		print 'x_egroup1.size = %d, x_egroup1_new.size = %d' % (x_egroup1.size, x_egroup1_new.size)
+		print 'x_egroup2.size = %d, x_egroup2_new.size = %d' % (x_egroup2.size, x_egroup2_new.size)
+
+		# Concatenate restricted x and b energy groups
+		x_new = np.append(x_egroup1_new, x_egroup2_new)
+		b_new = np.append(b_egroup1_new, b_egroup2_new)
+
+		print 'x_new.size = ' + str(x_new.size)
+
+		return A_new, x_new, b_new
+
+
+	def prolongation(b, x):
+		'''
+		'''
+
+		return
+
+		# 
+		m_old = sqrt(x.size)
+		m_new = m_old
+
+		# Reshape x and b into 2D arrays corresponding to the geometric mesh
+		x = np.reshape(x, [sqrt(m_old), sqrt(m_old)])
+		b = np.reshape(b, [sqrt(m_old), sqrt(m_old)])
+
+		# Allocate memory for the restricted x
+		x_new = np.array((sqrt(m_new), sqrt(m_new)))
+		b_new = np.array((sqrt(m_new), sqrt(m_new)))
+
+		# Restrict the x and b vectors
+		for i in range(sqrt(m_new)):
+			for j in range(sqrt(m_new)):
+				x_new[i,j] = self._R * x[i*2:i*2+2, j*2:j*2+2]
+				b_new[i,j] = self._R * b[i*2:i*2+2, j*2:j*2+2]
+
+		return x_new, b_new
+		
+
+
+#	def newtonScipyGMRES(self, newton_iter, gmres_iter, tol):
+
+		# Initial guess
+#		x = ones((self._M.shape[1]+1, 1))
+#		dx = 0.01 * ones((self._M.shape[1]+1, 1))
+#		source_old = self._F * x[:x.size-1]
+
+		# Outer Newton iteration
+#		for i in range(newton_iter):
+
+			# Compute keff
+#			phi = x[:x.size-1]
+#			source_new = self._F * x[:x.size-1]
+#			keff = sum(source_new) / sum(source_old)
+#			source_old = source_new
+
+			# Compute residual vector
+#			F = self.computeF(x)
+#			res = norm(F)
+#			print 'Newton-GMRES: i = %d	res = %1E	keff = %1.5f' % (i, res, keff)
+
+			# Check for convergence
+#			if res < tol:
+#				print 'Newton-GMRES converged to %1d iterations for ' \
+#						+ 'tol = %1E' % (i, res)
+#				break
+
+			# Use GMRES to solve for delta in J*delta = F equation
+#			J = self.computeAnalyticJacobian(x)
+
+			# ILU Preconditioned GMRES
+#			P = spilu(J.tocsc(), drop_tol=1e-5)
+#			D_x = lambda x: P.solve(x)
+#			D = LinearOperator((J.shape[0], J.shape[0]), D_x)
+#			dx = gmres(J.tocsr(), -F, tol=1E-3, maxiter=gmres_iter, M=D)
+
+
+#			# Unpreconditioned GMRES
+#			dx = gmres(J, -F, tol=1E-3, maxiter=gmres_iter)
+#			dx = array(dx[0])
+#			dx = reshape(dx, [dx.size, 1])
+
+			# Update x and renormalize the flux
+#			print 'x = ' + str(x)
+#			x = x + dx
+
+#			x[:x.size-1] = x[:x.size-1] / norm(x[:x.size-1])
+			
+
+#		print 'Newton-GMRES did not converge in %d iterations to tol = %1E' \
+#														 % (newton_iter, tol)
+
+#		phi = x[:x.size-1]
+#		self.plotPhi(phi)
 
 
 if __name__ == '__main__':
@@ -535,14 +374,14 @@ if __name__ == '__main__':
 
 	# Default arguments
 	num_mesh = 5
-	tolerance = 1E-3
+	tolerance = 1E-5
 	plot_mesh = False
 	spyMF = False
 
 	for o, a in opts:
 		if o in ("-n", "--num_mesh"):
-			num_mesh = min(int(a), 8)
-#			num_mesh = int(a)
+#			num_mesh = min(int(a), 8)
+			num_mesh = int(a)
 		elif o in ("-t", "--tolerance"):
 			tolerance = float(a)
 		elif o in ("-p", "--plot_mesh"):
@@ -553,52 +392,34 @@ if __name__ == '__main__':
 			assert False, "unhandled option"
 
 
-	LRA = LRAProblem(num_mesh, num_mesh)
-	LRA.setupMFMatrices()
+	prob = LRA.LRAProblem(num_mesh, num_mesh)
+	prob.setupMFMatrices()
+	solver = Solver()
 
 	if plot_mesh:
-		LRA.plotMesh()
+		prob.plotMesh()
 	if spyMF:
-		LRA.spyMF()
+		prob.spyMF()
 
-
-	phi = powerIteration(LRA._M, LRA._F, 200, tolerance)
-
-
-'''
-	# Guess initial keff
-	keff = 1.0
-
-	# Guess initial flux and normalize it
-#	phi = np.ones((LRA._M.shape[1], 1), dtype=np.float)
-#	phi = phi / np.linalg.norm(phi)
-
-	res = 5
-	outer_iter = 1000
-
-#	phi = np.reshape(phi, (phi.size, 1))
-	phi = gmres_jfnk(LRA._M, LRA._F, phi, keff, res, outer_iter, tolerance)
+	x = np.ones((prob._num_x_cells*prob._num_y_cells*2))
+	x = ravel(x)
+	b = np.ones((prob._num_x_cells*prob._num_y_cells*2))
+	b = ravel(b)
+	print 'x.size = ' + str(x.size)
+	[A, x, b] = solver.restrictAxb(prob._M, x, b, prob._num_x_cells)
+	print 'x.size = ' + str(x.size)
 
 	fig = figure()
-	phi_g1 = np.reshape(phi[0:LRA._num_y_cells * LRA._num_x_cells], \
-							(-LRA._num_y_cells, LRA._num_y_cells), order='A')
-	phi_g2 = np.reshape(phi[LRA._num_y_cells * LRA._num_x_cells:], \
-							(-LRA._num_y_cells, LRA._num_y_cells), order='A')
-	phi_g1 = np.flipud(phi_g1)
-	phi_g2 = np.flipud(phi_g2)
-	
-	fig.add_subplot(221)
-	pcolor(linspace(0, 165, LRA._num_x_cells), \
-						linspace(0, 165, LRA._num_y_cells), phi_g1)
-	axis([0, 165, 0, 165])
-	title('Group 1 (Fast) Flux')
-	
-	fig.add_subplot(222)
-	pcolor(linspace(0, 165, LRA._num_x_cells), \
-						linspace(0, 165, LRA._num_y_cells), phi_g2)
-	axis([0, 165, 0, 165])
-	title('Group 2 (Thermal) Flux')
-
+	spy(A)
 	show()
-'''
 
+	A, x, b = solver.restrictAxb(A, x, b, prob._num_x_cells/2+1)
+
+	fig = figure()
+	spy(A)
+	show()
+
+#	phi = solver.powerIteration(prob._M, prob._F, 200, tolerance)
+#	prob.plotPhi(phi)
+
+#	LRA.newtonScipyGMRES(1000, 1000, tolerance)
