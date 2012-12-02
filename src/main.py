@@ -1,7 +1,7 @@
 import numpy as np
 from pylab import *
-from scipy.sparse import lil_matrix, dia_matrix, hstack, vstack
-from scipy.sparse.linalg import gmres, spilu, LinearOperator
+from scipy.sparse import *
+from scipy.sparse.linalg import *
 from os import *
 from sys import *
 import getopt
@@ -11,43 +11,129 @@ import LRAProblem as LRA
 
 class Solver(object):
 
-	def __init__(self):
+
+	def constructRestrictionOperator(self, mesh_old, method='fullweighting'):
+		'''
+		'''
+
+		# Compute new mesh size
+		mesh_new = int(floor(mesh_old / 2.))	# Round down for odd mesh size
+
+		print 'mesh_old = %d, mesh_new = %d' % (mesh_old, mesh_new)
+
+		# Create relaxation operator for using different stencil types
+		if method is 'injection':
+			print 'Injection not yet implemented for restriction operator'
+			sys.exit(0)
+
+		elif method is 'fullweighting':
+
+			# Old odd mesh to new even mesh
+			if mesh_old % 2 is 1:
+				# Construct base stencil vector
+				stencil = np.zeros((1,mesh_old**2))
+				stencil[0,0:3] = [0.25, 0.5, 0.25]
+				stencil[0,mesh_old:mesh_old+3] = [0.5, 1., 0.5]
+				stencil[0,2*mesh_old:2*mesh_old+3] = [0.25, 0.5, 0.25]
+				stencil *= 0.25
+
+			# Old even mesh to new odd mesh
+			else:
+				# Construct base stencil vector
+				stencil = np.zeros((1,mesh_old**2))
+				stencil[0,0:2] = [0.5, 0.5]
+				stencil[0,mesh_old:mesh_old+2] = [0.5, 0.5]
+				stencil *= 0.5
+
+		else:
+			print str(method) + ' not yet implemented for restriction operator'
+			sys.exit(0)
+
+		# Construct restriction operator from the stencil
+		stencil = np.reshape(stencil, (1,stencil.size))
+		R = np.zeros((mesh_new**2,mesh_old**2))
+		for i in range(mesh_new**2):
+			R[i,:] = np.roll(stencil, (i*2 + (i/mesh_new) * mesh_old))
+
+		# convert to sparse matrix
+		sparseR = csr_matrix(R)
+
+		return sparseR
+
+
+
+	def constructProlongationOperator(self, mesh_old, method='fullweighting'):
+		'''
+		'''
 		
-		# Full weighting stencils for multigrid
-		self._R_interior = np.array([[0.25, 0.5, 0.25], \
-									 [0.5, 1.0, 0.5], \
-									 [0.25, 0.5, 0.25]])
-		self._R_interior *= (1 / 4.)
+		R = self.constructRestrictionOperator(mesh_old, method)
 
-		self._R_tl = np.array([[1., 0.5], \
-							   [0.5, 0.25]])
-		self._R_tl *= (1. / 2.25)
+		# Create prolongation operator for using different stencil types
+		if method is 'injection':
+			print 'Injection not yet implemented for prolongation operator'
+			sys.exit(0)
 
-		self._R_tr = np.array([[0.5, 1.], \
-							   [0.25, .5]])
-		self._R_tr *= (1. / 2.25)
+		elif method is 'fullweighting':
 
-		self._R_bl = np.array([[0.5, 0.25], \
-							   [1., 0.5]])
-		self._R_bl *= (1. / 2.25)
+			# Old odd mesh to new even mesh
+			if mesh_old % 2 is 1:
+				P = 4. * csr_matrix.transpose(R)
+			
+			# Old even mesh to new odd mesh
+			else:
+				P = 2. * csr_matrix.transpose(R)
 
-		self._R_br = np.array([[0.25, 0.5], \
-							   [0.5, 1.]])
-		self._R_br *= (1. / 2.25)
+		else:
+			print str(method) + ' not yet implemented for prolongation operator'
+			sys.exit(0)
 
-		self._R_top = np.array([[0.5, 0.25], \
-								[1., 0.5], \
-								[0.5, 0.25]])
-		self._R_top *= (1. / 3.)		
+		sparseP = csr_matrix(P)
 
-		self._R_bottom = np.array([[0.5, 0.25], \
-								   [0.5, 1.], \
-								   [0.25, 0.5]])
-		self._R_bottom *= (1. / 3.)
+		return P
 
+
+
+	def restrictResidual(self, r, method='fullweighting'):
+		'''
+		'''
+
+		# Compute the current mesh size
+		m_old = int(sqrt(r.size/2))
+		
+		# Apply the restriction operator to the residual
+		R = self.constructRestrictionOperator(m_old, method)
+
+		r_new1 = R * r[:r.size/2]
+		r_new2 = R * r[r.size/2:]
+		r_new = np.append(r_new1, r_new2)
+
+		return r_new
+
+
+
+	def restrictCoeffMatrix(self, A, method='fullweighting'):
+		'''
+		'''
+
+		# Compute new mesh size
+		m_old = int(sqrt(A.shape[0]/2))
+		
+		# Apply the restriction/prolongation operators to coeff matrix
+		# to restrict it according to the Galerkin Condition
+		R = self.constructRestrictionOperator(m_old, method)
+		P = self.constructProlongationOperator(m_old, method)
+		A = lil_matrix(A)
+		A_new11 = csr_matrix(csr_matrix(R * A[:m_old**2, :m_old**2]) * P)
+		A_new12 = csr_matrix(csr_matrix(R * A[:m_old**2, m_old**2:]) * P)
+		A_new21 = csr_matrix(csr_matrix(R * A[m_old**2:, :m_old**2]) * P)
+		A_new22 = csr_matrix(csr_matrix(R * A[m_old**2:, m_old**2:]) * P)
+		A_new = bmat([[A_new11,A_new12],[A_new21,A_new22]])
+
+		return A_new
 		
 
-	def powerIteration(self, M, F, max_iters, tol, precond=False):
+
+	def powerIteration(self, M, F, method, max_iters, tol, precond=False):
 		'''
 		Perform power iteration for the keff eigenvalue problem.
 		Converges the source to a specified tolerance and plots the
@@ -69,15 +155,39 @@ class Solver(object):
 
 			# Update flux vector
 
-			# Preconditioned GMRES
+			# If Preconditioned
 			if precond:
 				P = spilu(M.tocsc(), drop_tol=1e-5)
 				D_x = lambda x: P.solve(x)
 				D = LinearOperator((M.shape[0], M.shape[0]), D_x)
-				phi_new = gmres(M.tocsr(), ((1. / keff) * F * phi), M=D)
-			# Unpreconditioned GMRES
+
+				if method is 'bicgstab':
+					phi_new = bicgstab(M.tocsr(), ((1. / keff) * F * phi), M=D)
+				elif method is 'bicg':
+					phi_new = bicg(M.tocsr(), ((1. / keff) * F * phi), M=D)
+				elif method is 'gmres':
+					phi_new = gmres(M.tocsr(), ((1. / keff) * F * phi), M=D)
+				elif method is 'cg':
+					phi_new = cg(M.tocsr(), ((1. / keff) * F * phi), M=D)
+				elif method is 'cgs':
+					phi_new = cgs(M.tocsr(), ((1. / keff) * F * phi), M=D)
+				elif method is 'qmr':
+					phi_new = qmr(M.tocsr(), ((1. / keff) * F * phi), M=D)
+
+			# Unpreconditioned
 			else:
-				phi_new = gmres(M.tocsr(), ((1. / keff) * F * phi))
+				if method is 'bicgstab':
+					phi_new = bicgstab(M.tocsr(), ((1. / keff) * F * phi))
+				elif method is 'bicg':
+					phi_new = bicg(M.tocsr(), ((1. / keff) * F * phi))
+				elif method is 'gmres':
+					phi_new = gmres(M.tocsr(), ((1. / keff) * F * phi))
+				elif method is 'cg':
+					phi_new = cg(M.tocsr(), ((1. / keff) * F * phi))
+				elif method is 'cgs':
+					phi_new = cgs(M.tocsr(), ((1. / keff) * F * phi))
+				elif method is 'qmr':
+					phi_new = qmr(M.tocsr(), ((1. / keff) * F * phi))
 
 			phi_new = phi_new[0][:]
 
@@ -122,192 +232,6 @@ class Solver(object):
 
 		return phi
 
-
-	def restrict(self, x):
-		'''
-		This restriction operator requires the number of mesh to be odd
-		'''
-
-		x = np.asarray(x)
-
-		mesh_size = int(sqrt(x.size))
-		new_mesh_size = int(ceil(mesh_size / 2.))
-
-		print 'x.size = %d, mesh_size = %d, new_mesh_size = %d' % (x.size, mesh_size, new_mesh_size)
-		
-		# Reshape x into 2D arrays corresponding to the geometric mesh
-		x = np.reshape(x, [mesh_size, mesh_size])
-
-		# Allocate memory for the restricted x 
-		x_new = np.zeros((new_mesh_size, new_mesh_size))
-
-		# Restrict the x and b vectors
-		for i in range(new_mesh_size):
-			for j in range(new_mesh_size):
-				print 'i = %d, j = %d' % (i,j)
-				# top left corner
-				if (i is 0 and j is 0):
-					x_new[i,j] = sum(np.dot(self._R_tl, x[i*2:i*2+2,j*2:j*2+2]))
-				# top right corner
-				elif (i is 0 and j is new_mesh_size-1):
-					x_new[i,j] = sum(np.dot(self._R_tr, x[i*2:i*2+2, j*2:j*2+1]))
-				# top row but not a corner
-				elif (i is 0):
-					x_new[i,j] = sum(np.dot(self._R_top, x[i*2:i*2+2, j*2-1:j*2+2]))
-				# bottom left corner
-				elif (i is new_mesh_size-1 and j is 0):
-					print 'R_bl.shape = ' + str(self._R_bl.shape) + 'x[i*2-1:i*2, j*2:j*2+2].shape = ' + str(x[i*2-1:i*2+1, j*2:j*2+2].shape)
-					x_new[i,j] = sum(np.dot(self._R_bl, x[i*2-1:i*2+1, j*2:j*2+2]))
-				# bottom right corner
-				elif (i is new_mesh_size-1 and j is new_mesh_size-1):
-					x_new[i,j] = sum(np.dot(self._R_br, x[i*2:i*2+1, j*2:j*2+1]))
-				# bottom row but not a corner
-				elif (i is new_mesh_size-1):
-					x_new[i,j] = sum(np.dot(self._R_bottom, x[i*2:i*2+1, j*2-1:j*2+1]))
-				# interior cell
-				else:
-					x_new[i,j] = sum(np.dot(self._R_interior, x[i*2-1:i*2+2, j*2-1:j*2+1]))
-
-
-#				print 'i = %d, j = %d' % (i, j)
-#				x_new[i,j] = sum(np.dot(self._R, x[i*2:i*2+3, j*2:j*2+3]))
-
-		# Reshape x and b back into 1D arrays
-		x_new = np.ravel(x_new)
-
-		print 'x_new.size = %d, x_old.size = %d' % (x_new.size, x.size)
-
-		return x_new
-
-
-
-	def restrictAxb(self, A, x, b, m):
-		'''
-
-		'''
-
-		#######################################################################
-		#								Restrict M							  #
-		#######################################################################
-
-		# Extract the diagonals for M and F
-		# Pad with zeros at front for superdiagonals / back for subdiagonals
-		A = A.todense()
-		size = A.shape[0]
-
-		M_diag = [A[i,i] for i in range(size)]
-
-		M_udiag = zeros(size)
-		M_udiag[1:size] = [A[i,i+1] for i in range(size-1)]
-		M_udiag = np.asarray(M_udiag)
-
-		M_2udiag = zeros(size)
-		M_2udiag[m:size] = [A[i,i+m] for i in range(size-m)]
-		M_2udiag = np.asarray(M_2udiag)
-
-		M_ldiag = zeros(size)
-		M_ldiag[:size-1] = [A[i+1,i] for i in range(size-1)]
-		M_ldiag = np.asarray(M_ldiag)
-
-		M_2ldiag = zeros(size)
-		M_2ldiag[:size-m] = [A[i+m,i] for i in range(size-m)]
-		M_2ldiag = np.asarray(M_2ldiag)
-
-		M_3ldiag = zeros(size)
-		M_3ldiag[:size/2] = [A[i+size/2,i] for i in range(size/2)]
-		M_3ldiag = np.asarray(M_3ldiag)
-
-
-		# Restrict each energy group of each subdiagonal
-		print 'size = %d' % (size)
-		M_diag_egroup1_new = self.restrict(M_diag[:size/2])
-		M_diag_egroup2_new = self.restrict(M_diag[size/2:])
-		M_diag_new = np.append(M_diag_egroup1_new, M_diag_egroup2_new)
-
-		M_udiag_egroup1_new = self.restrict(M_udiag[:size/2.])
-		M_udiag_egroup2_new = self.restrict(M_udiag[size/2.:])
-		M_udiag_new = np.append(M_udiag_egroup1_new, M_udiag_egroup2_new)
-
-		M_2udiag_egroup1_new = self.restrict(M_2udiag[:size/2.])
-		M_2udiag_egroup2_new = self.restrict(M_2udiag[size/2.:])
-		M_2udiag_new = np.append(M_2udiag_egroup1_new, M_2udiag_egroup2_new)
-
-		M_ldiag_egroup1_new = self.restrict(M_ldiag[:size/2.])
-		M_ldiag_egroup2_new = self.restrict(M_ldiag[size/2.:])
-		M_ldiag_new = np.append(M_ldiag_egroup1_new, M_ldiag_egroup2_new)
-
-		M_2ldiag_egroup1_new = self.restrict(M_2ldiag[:size/2.])
-		M_2ldiag_egroup2_new = self.restrict(M_2ldiag[size/2.:])
-		M_2ldiag_new = np.append(M_2ldiag_egroup1_new, M_2ldiag_egroup2_new)
-
-		M_3ldiag_egroup1_new = self.restrict(M_3ldiag[:size/2.])
-		M_3ldiag_egroup2_new = self.restrict(M_3ldiag[size/2.:])
-		M_3ldiag_new = np.append(M_3ldiag_egroup1_new, M_3ldiag_egroup2_new)
-
-
-		# Construct the restricted A matrix
-		A_new = dia_matrix(([M_diag_new, M_udiag_new, M_2udiag_new, 
-							   M_ldiag_new, M_2ldiag_new, M_3ldiag_new], 
-							   [0, 1, m/2., -1, -m/2., -size/4]), \
-								shape=(size/4., size/4.))
-
-				
-		#######################################################################
-		#							Restrict x and b						  #
-		#######################################################################
-		# Reshape x and b into 2D arrays corresponding to the geometric mesh
-		# with separate arrays for each energy group
-		print 'x.size = %d, x.size/2 = %d' % (x.size, x.size/2)
-		print 'x[:(x.size/2)].shape = ' + str(x[:(x.size/2)].shape)
-		x_egroup1 = np.asarray(x[:(x.size/2)])
-		x_egroup2 = x[x.size/2:]
-		b_egroup1 = b[:x.size/2]
-		b_egroup2 = b[x.size/2:]
-
-		# Restrict each energy group of x and b
-		x_egroup1_new = self.restrict(x_egroup1)
-		x_egroup2_new = self.restrict(x_egroup2)
-		b_egroup1_new = self.restrict(b_egroup1)
-		b_egroup2_new = self.restrict(b_egroup2)
-
-		print 'x_egroup1.size = %d, x_egroup1_new.size = %d' % (x_egroup1.size, x_egroup1_new.size)
-		print 'x_egroup2.size = %d, x_egroup2_new.size = %d' % (x_egroup2.size, x_egroup2_new.size)
-
-		# Concatenate restricted x and b energy groups
-		x_new = np.append(x_egroup1_new, x_egroup2_new)
-		b_new = np.append(b_egroup1_new, b_egroup2_new)
-
-		print 'x_new.size = ' + str(x_new.size)
-
-		return A_new, x_new, b_new
-
-
-	def prolongation(b, x):
-		'''
-		'''
-
-		return
-
-		# 
-		m_old = sqrt(x.size)
-		m_new = m_old
-
-		# Reshape x and b into 2D arrays corresponding to the geometric mesh
-		x = np.reshape(x, [sqrt(m_old), sqrt(m_old)])
-		b = np.reshape(b, [sqrt(m_old), sqrt(m_old)])
-
-		# Allocate memory for the restricted x
-		x_new = np.array((sqrt(m_new), sqrt(m_new)))
-		b_new = np.array((sqrt(m_new), sqrt(m_new)))
-
-		# Restrict the x and b vectors
-		for i in range(sqrt(m_new)):
-			for j in range(sqrt(m_new)):
-				x_new[i,j] = self._R * x[i*2:i*2+2, j*2:j*2+2]
-				b_new[i,j] = self._R * b[i*2:i*2+2, j*2:j*2+2]
-
-		return x_new, b_new
-		
 
 
 #	def newtonScipyGMRES(self, newton_iter, gmres_iter, tol):
@@ -369,18 +293,18 @@ class Solver(object):
 if __name__ == '__main__':
 
     # Parse command line options
-	opts, args = getopt.getopt(sys.argv[1:], "t:n:psn", \
-							["num_mesh", "plot_mesh", "spy", "tolerance"])
+	opts, args = getopt.getopt(sys.argv[1:], "t:n:m:psn", \
+					["num_mesh", "plot_mesh", "spy", "tolerance", "method"])
 
 	# Default arguments
 	num_mesh = 5
 	tolerance = 1E-5
 	plot_mesh = False
 	spyMF = False
+	method = 'bicgstab'
 
 	for o, a in opts:
 		if o in ("-n", "--num_mesh"):
-#			num_mesh = min(int(a), 8)
 			num_mesh = int(a)
 		elif o in ("-t", "--tolerance"):
 			tolerance = float(a)
@@ -388,38 +312,58 @@ if __name__ == '__main__':
 			plot_mesh = True
 		elif o in ("-s", "--spy"):
 			spyMF = True
+		elif o in ("-m", "--method"):
+			if a is 'bicgstab':
+				method = 'bicgstab'
+			elif a is 'bicg':
+				method = 'bicg'
+			elif a is 'gmres':
+				method = 'gmres'
+			elif a is 'cg':
+				method = 'cg'
+			elif a is 'cgs':
+				method = 'cgs'
+			elif a is 'qmr':
+				method = 'qmr'
+			else:
+				print str(a) + ' is not a recognized linear solver'
 		else:
 			assert False, "unhandled option"
 
 
 	prob = LRA.LRAProblem(num_mesh, num_mesh)
 	prob.setupMFMatrices()
-	solver = Solver()
 
 	if plot_mesh:
 		prob.plotMesh()
 	if spyMF:
 		prob.spyMF()
 
-	x = np.ones((prob._num_x_cells*prob._num_y_cells*2))
-	x = ravel(x)
-	b = np.ones((prob._num_x_cells*prob._num_y_cells*2))
-	b = ravel(b)
-	print 'x.size = ' + str(x.size)
-	[A, x, b] = solver.restrictAxb(prob._M, x, b, prob._num_x_cells)
-	print 'x.size = ' + str(x.size)
+	solver = Solver()
 
-	fig = figure()
-	spy(A)
-	show()
 
-	A, x, b = solver.restrictAxb(A, x, b, prob._num_x_cells/2+1)
-
-	fig = figure()
-	spy(A)
-	show()
-
-#	phi = solver.powerIteration(prob._M, prob._F, 200, tolerance)
-#	prob.plotPhi(phi)
+	phi = solver.powerIteration(prob._M, prob._F, method, 200, tolerance)
+	prob.plotPhi(phi)
 
 #	LRA.newtonScipyGMRES(1000, 1000, tolerance)
+
+	if False:
+		x = np.ones((prob._num_x_cells*prob._num_y_cells*2))
+		x = ravel(x)
+		b = np.ones((prob._num_x_cells*prob._num_y_cells*2))
+		b = ravel(b)
+
+		x = solver.restrictResidual(x, 'fullweighting')
+		A = solver.restrictCoeffMatrix(prob._M, 'fullweighting')
+
+		fig = figure()
+		spy(A)
+		show()
+
+		x = solver.restrictResidual(x, 'fullweighting')
+		A = solver.restrictCoeffMatrix(A, 'fullweighting')
+
+		fig = figure()
+		spy(A)
+		show()
+
