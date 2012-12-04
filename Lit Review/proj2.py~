@@ -131,7 +131,7 @@ def MultiGrid(N, T, res=None):
 
 
 if __name__ == '__main__':
-    N = 65
+    N = 35
     T = 20
     phi = MultiGrid(N,T)
     contourf(phi[1,15])

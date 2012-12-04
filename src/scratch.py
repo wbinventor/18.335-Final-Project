@@ -178,3 +178,193 @@ def givens(H, c, s, g, n):
 
 	return
 
+
+
+
+
+	def restrict(self, x):
+		'''
+		This restriction operator requires the number of mesh to be odd
+		'''
+
+		x = np.asarray(x)
+
+		mesh_size = int(sqrt(x.size))
+		new_mesh_size = int(ceil(mesh_size / 2.))
+
+		print 'x.size = %d, mesh_size = %d, new_mesh_size = %d' % (x.size, mesh_size, new_mesh_size)
+		
+		# Reshape x into 2D arrays corresponding to the geometric mesh
+		x = np.reshape(x, [mesh_size, mesh_size])
+
+		# Allocate memory for the restricted x 
+		x_new = np.zeros((new_mesh_size, new_mesh_size))
+
+		# Restrict the x and b vectors
+		for i in range(new_mesh_size):
+			for j in range(new_mesh_size):
+				print 'i = %d, j = %d' % (i,j)
+				# top left corner
+				if (i is 0 and j is 0):
+					x_new[i,j] = sum(np.dot(self._R_tl, x[i*2:i*2+2,j*2:j*2+2]))
+				# top right corner
+				elif (i is 0 and j is new_mesh_size-1):
+					x_new[i,j] = sum(np.dot(self._R_tr, x[i*2:i*2+2, j*2:j*2+1]))
+				# top row but not a corner
+				elif (i is 0):
+					x_new[i,j] = sum(np.dot(self._R_top, x[i*2:i*2+2, j*2-1:j*2+2]))
+				# bottom left corner
+				elif (i is new_mesh_size-1 and j is 0):
+					print 'R_bl.shape = ' + str(self._R_bl.shape) + 'x[i*2-1:i*2, j*2:j*2+2].shape = ' + str(x[i*2-1:i*2+1, j*2:j*2+2].shape)
+					x_new[i,j] = sum(np.dot(self._R_bl, x[i*2-1:i*2+1, j*2:j*2+2]))
+				# bottom right corner
+				elif (i is new_mesh_size-1 and j is new_mesh_size-1):
+					x_new[i,j] = sum(np.dot(self._R_br, x[i*2:i*2+1, j*2:j*2+1]))
+				# bottom row but not a corner
+				elif (i is new_mesh_size-1):
+					x_new[i,j] = sum(np.dot(self._R_bottom, x[i*2:i*2+1, j*2-1:j*2+1]))
+				# interior cell
+				else:
+					x_new[i,j] = sum(np.dot(self._R_interior, x[i*2-1:i*2+2, j*2-1:j*2+1]))
+
+
+#				print 'i = %d, j = %d' % (i, j)
+#				x_new[i,j] = sum(np.dot(self._R, x[i*2:i*2+3, j*2:j*2+3]))
+
+		# Reshape x and b back into 1D arrays
+		x_new = np.ravel(x_new)
+
+		print 'x_new.size = %d, x_old.size = %d' % (x_new.size, x.size)
+
+		return x_new
+
+
+
+	def restrictAxb(self, A, x, b, m):
+		'''
+
+		'''
+
+		#######################################################################
+		#								Restrict M							  #
+		#######################################################################
+
+		# Extract the diagonals for M and F
+		# Pad with zeros at front for superdiagonals / back for subdiagonals
+		A = A.todense()
+		size = A.shape[0]
+
+		M_diag = [A[i,i] for i in range(size)]
+
+		M_udiag = zeros(size)
+		M_udiag[1:size] = [A[i,i+1] for i in range(size-1)]
+		M_udiag = np.asarray(M_udiag)
+
+		M_2udiag = zeros(size)
+		M_2udiag[m:size] = [A[i,i+m] for i in range(size-m)]
+		M_2udiag = np.asarray(M_2udiag)
+
+		M_ldiag = zeros(size)
+		M_ldiag[:size-1] = [A[i+1,i] for i in range(size-1)]
+		M_ldiag = np.asarray(M_ldiag)
+
+		M_2ldiag = zeros(size)
+		M_2ldiag[:size-m] = [A[i+m,i] for i in range(size-m)]
+		M_2ldiag = np.asarray(M_2ldiag)
+
+		M_3ldiag = zeros(size)
+		M_3ldiag[:size/2] = [A[i+size/2,i] for i in range(size/2)]
+		M_3ldiag = np.asarray(M_3ldiag)
+
+
+		# Restrict each energy group of each subdiagonal
+		print 'size = %d' % (size)
+		M_diag_egroup1_new = self.restrict(M_diag[:size/2])
+		M_diag_egroup2_new = self.restrict(M_diag[size/2:])
+		M_diag_new = np.append(M_diag_egroup1_new, M_diag_egroup2_new)
+
+		M_udiag_egroup1_new = self.restrict(M_udiag[:size/2.])
+		M_udiag_egroup2_new = self.restrict(M_udiag[size/2.:])
+		M_udiag_new = np.append(M_udiag_egroup1_new, M_udiag_egroup2_new)
+
+		M_2udiag_egroup1_new = self.restrict(M_2udiag[:size/2.])
+		M_2udiag_egroup2_new = self.restrict(M_2udiag[size/2.:])
+		M_2udiag_new = np.append(M_2udiag_egroup1_new, M_2udiag_egroup2_new)
+
+		M_ldiag_egroup1_new = self.restrict(M_ldiag[:size/2.])
+		M_ldiag_egroup2_new = self.restrict(M_ldiag[size/2.:])
+		M_ldiag_new = np.append(M_ldiag_egroup1_new, M_ldiag_egroup2_new)
+
+		M_2ldiag_egroup1_new = self.restrict(M_2ldiag[:size/2.])
+		M_2ldiag_egroup2_new = self.restrict(M_2ldiag[size/2.:])
+		M_2ldiag_new = np.append(M_2ldiag_egroup1_new, M_2ldiag_egroup2_new)
+
+		M_3ldiag_egroup1_new = self.restrict(M_3ldiag[:size/2.])
+		M_3ldiag_egroup2_new = self.restrict(M_3ldiag[size/2.:])
+		M_3ldiag_new = np.append(M_3ldiag_egroup1_new, M_3ldiag_egroup2_new)
+
+
+		# Construct the restricted A matrix
+		A_new = dia_matrix(([M_diag_new, M_udiag_new, M_2udiag_new, 
+							   M_ldiag_new, M_2ldiag_new, M_3ldiag_new], 
+							   [0, 1, m/2., -1, -m/2., -size/4]), \
+								shape=(size/4., size/4.))
+
+				
+		#######################################################################
+		#							Restrict x and b						  #
+		#######################################################################
+		# Reshape x and b into 2D arrays corresponding to the geometric mesh
+		# with separate arrays for each energy group
+		print 'x.size = %d, x.size/2 = %d' % (x.size, x.size/2)
+		print 'x[:(x.size/2)].shape = ' + str(x[:(x.size/2)].shape)
+		x_egroup1 = np.asarray(x[:(x.size/2)])
+		x_egroup2 = x[x.size/2:]
+		b_egroup1 = b[:x.size/2]
+		b_egroup2 = b[x.size/2:]
+
+		# Restrict each energy group of x and b
+		x_egroup1_new = self.restrict(x_egroup1)
+		x_egroup2_new = self.restrict(x_egroup2)
+		b_egroup1_new = self.restrict(b_egroup1)
+		b_egroup2_new = self.restrict(b_egroup2)
+
+		print 'x_egroup1.size = %d, x_egroup1_new.size = %d' % (x_egroup1.size, x_egroup1_new.size)
+		print 'x_egroup2.size = %d, x_egroup2_new.size = %d' % (x_egroup2.size, x_egroup2_new.size)
+
+		# Concatenate restricted x and b energy groups
+		x_new = np.append(x_egroup1_new, x_egroup2_new)
+		b_new = np.append(b_egroup1_new, b_egroup2_new)
+
+		print 'x_new.size = ' + str(x_new.size)
+
+		return A_new, x_new, b_new
+
+
+
+	def prolongation(b, x):
+		'''
+		'''
+
+		return
+
+		# 
+		m_old = sqrt(x.size)
+		m_new = m_old
+
+		# Reshape x and b into 2D arrays corresponding to the geometric mesh
+		x = np.reshape(x, [sqrt(m_old), sqrt(m_old)])
+		b = np.reshape(b, [sqrt(m_old), sqrt(m_old)])
+
+		# Allocate memory for the restricted x
+		x_new = np.array((sqrt(m_new), sqrt(m_new)))
+		b_new = np.array((sqrt(m_new), sqrt(m_new)))
+
+		# Restrict the x and b vectors
+		for i in range(sqrt(m_new)):
+			for j in range(sqrt(m_new)):
+				x_new[i,j] = self._R * x[i*2:i*2+2, j*2:j*2+2]
+				b_new[i,j] = self._R * b[i*2:i*2+2, j*2:j*2+2]
+
+		return x_new, b_new
+		

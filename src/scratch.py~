@@ -1,3 +1,42 @@
+	def newtonGMRES(self, newton_iter, gmres_iter, tol):
+
+		# Initial guess
+		x = ones((self._M.shape[1]+1, 1))
+		dx = 0.01 * ones((self._M.shape[1]+1, 1))
+		x[:x.size-1] = x[:x.size-1] / norm(x[:x.size-1])
+
+		# Outer Newton iteration
+		for i in range(newton_iter):
+
+			# Compute residual vector
+			F = self.computeF(x)
+			res = norm(F)
+			print 'Newton-GMRES: i = %d	res = %1E	keff = %1.5f' % \
+												(i,res, x[x.size-1])
+
+			# Check for convergence
+			if res < tol:
+				print 'Newton-GMRES converged to %1d iterations for ' \
+						+ 'tol = %1E' % (i, res)
+				break
+
+			# Use GMRES to solve for delta in J*delta = F equation
+			dx, err = self.gmres_jfnk(x, dx, -F, gmres_iter, 100, 1E-3)
+
+			print 'GMRES err = %1E' % (err)
+
+			# Update x
+			x = x + dx
+			x[:x.size-1] = x[:x.size-1] / norm(x[:x.size-1])
+
+		print 'Newton-GMRES did not converge in %d iterations to tol = %1E' \
+														 % (newton_iter, tol)
+
+		phi = x[:x.size-2]
+		self.plotPhi(phi)
+
+
+
 	def gmres_jfnk(self, x_old, x_new, b, res, outer_iter, tol):
 	
 		matvec=''
