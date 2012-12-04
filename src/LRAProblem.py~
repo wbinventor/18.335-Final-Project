@@ -321,28 +321,6 @@ class LRAProblem(object):
 		return (2.0 * D1 * D1) / (delta * (D1 + D2))
 
 
-	def computeF(self, x):
-		'''
-		Compute the residual vector for JFNK
-		'''
-
-		m = x.size
-		phi = x[:m-1]
-		lamb = x[m-1][0]
-
-		# Allocate space for F
-		F = ones((m, 1))
-
-		print 'lamb = ' + str(lamb)
-	
-		# M - lambda * F * phi constraint
-		F[:m-1] = self._M * phi - lamb * self._F * phi
-
-		# Flux normalization constraint
-		F[m-1] = -0.5 * vdot(phi, phi) + 0.5
-
-		return F
-
 
 	def plotPhi(self, phi):
 		'''
@@ -373,67 +351,3 @@ class LRAProblem(object):
 		title('Group 2 (Thermal) Flux')
 
 		show()
-
-
-	def computeAnalyticJacobian(self, x):
-
-		m = x.shape[0]
-		phi = x[:m-1]
-		lamb = x[m-1][0]
-
-		J = lil_matrix((m,m))
-
-		# Construct temporary blocks for Jacobian
-		a = self._M - lamb * self._F
-		b = -phi.T
-		c = -self._F * phi
-		c = vstack([c, zeros(1)])
-
-		# Build Jacobian using scipy's sparse matrix stacking operators
-		J = vstack([a, b])
-		J = hstack([J, c])
-
-		return J
-
-
-	def computeAnalyticJacobVecProd(self, x, y):
-
-		m = x.shape[0]
-		phi = x[:m-1]
-		lamb = x[m-1]
-
-		print 'lamb = ' + str(lamb) + '	lamb[0] = ' + str(lamb[0])
-
-#		J = lil_matrix((m,m))
-
-		# Construct temporary blocks for Jacobian
-		a = self._M - lamb[0] * self._F
-		b = phi.T
-		c = -self._F * phi
-		c = vstack([c, zeros(1)])
-
-		# Build Jacobian using scipy's sparse matrix stacking operators
-		J = vstack([a, b])
-		J = hstack([J, c])
-
-		return J * y
-
-
-	def computeFDJacobVecProd(self, x, y):
-
-		phi = x[:x.size-2]
-		lamb = x[x.size-1]		
-		y = resize(y, [y.size, 1])
-
-		b = 1E-8
-
-		epsilon = b * sum(x) / (y.size * norm(y))
-		
-		# Approximate Jacobian matrix vector multiplication
-		tmp1 = self.computeF(x + (epsilon * y))
-#		print 'compute tmp1'
-		tmp2 = self.computeF(x)
-#		print 'compute tmp2'
-		Jy = (tmp1 - tmp2) / epsilon
-
-		return Jy

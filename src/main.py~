@@ -4,6 +4,7 @@ from scipy.sparse import *
 from scipy.sparse.linalg import *
 from os import *
 from sys import *
+from time import time
 import getopt
 
 import LRAProblem as LRA
@@ -14,6 +15,328 @@ class Solver(object):
 	def __init__(self, lra):
 
 		self._LRA = lra
+
+
+	def linearSolve(self, A, b, tolerance=1E-5, restart_iter=None, 
+					outer_iter=None, method='gmres', preconditioned=False):
+		'''
+		Solves the linear system Ax=b for x using one of SciPy's 
+		iterative solvers
+		'''
+
+		# If ILU Preconditioned
+		if preconditioned:
+
+			P = spilu(A.tocsc(), drop_tol=1e-5)
+			D_x = lambda x: P.solve(x)
+			D = LinearOperator((A.shape[0], A.shape[0]), D_x)
+
+			if method in ('bicgstab'):
+				x = bicgstab(A, b, tol=tolerance, maxiter=outer_iter, M=D)
+			elif method in ('bicg'):
+				x = bicg(A, b, tol=tolerance,	maxiter=outer_iter, M=D)
+			elif method in ('gmres'):
+				x = gmres(A, b, tol=tolerance, restart=restart_iter, \
+													maxiter=outer_iter, M=D)
+			elif method in ('cg'):
+				x = cg(A, b, tol=tolerance, maxiter=outer_iter, M=D)
+			elif method in ('cgs'):
+				x = cgs(A, b, tol=tolerance, maxiter=outer_iter, M=D)
+			elif method in ('qmr'):
+				x = qmr(A, b, tol=tolerance, maxiter=outer_iter, M=D)
+
+		# Unpreconditioned
+		else:
+			if method in ('bicgstab'):
+				x = bicgstab(A, b, tol=tolerance, maxiter=outer_iter)
+			elif method in ('bicg'):
+				x = bicg(A, b, tol=tolerance, maxiter=outer_iter)
+			elif method in ('gmres'):
+				x = gmres(A, b, tol=tolerance, restart=restart_iter, \
+														maxiter=outer_iter)
+			elif method in ('cg'):
+				x = cg(A, b, tol=tolerance, maxiter=outer_iter)
+			elif method in ('cgs'):
+				x = cgs(A, b, tol=tolerance, maxiter=outer_iter)
+			elif method in ('qmr'):
+				x = qmr(A, b, tol=tolerance, maxiter=outer_iter)
+
+		x = array(x[0])
+		x = reshape(x, [x.size, 1])
+
+		return x
+
+
+
+	def powerIteration(self, M, F, max_iters, tol, method='gmres', guess=None, \
+									preconditioned=False, plot_residual=False):
+		'''
+		Perform power iteration for the keff eigenvalue problem.
+		Converges the source to a specified tolerance and plots the
+		fast and thermal flux and the residual at each iteration
+		'''
+
+		# Start the timer
+		start_time = time()
+
+		# Guess initial keff
+		keff = 1.0
+
+		# Guess initial flux and normalize it if user did not provide it
+		if guess is None:
+			phi = np.ones((M.shape[1], 1))
+		else:
+			phi = guess
+
+		phi = phi / norm(phi)
+
+		# Array for phi_res and keff_res
+		res = []
+		keff_res = []
+
+		for i in range(max_iters):
+
+			# Update flux vector
+			phi_new = self.linearSolve(M, ((1. / keff) * F * phi), \
+						method=method, preconditioned=preconditioned)
+
+			# Normalize new flux
+			phi_new = phi_new / norm(phi_new)
+	
+			# Update keff
+			source_new = F * phi_new
+			source_old = F * phi
+
+			tot_source_new = sum(source_new)
+			tot_source_old = sum(source_old)
+
+			keff_new = tot_source_new / tot_source_old
+
+			# Compute residuals
+			res.append(norm(source_old - source_new))
+			keff_res.append(abs(keff_new - keff) / keff)
+
+			print ("Power iteration: i = %d	res = %1.5E	keff = %1.5f"
+											% (i, res[i], keff))
+
+			# Check convergence
+			if res[i] < tol:
+				elapsed_time = time() - start_time
+				print ("Power iteration converged in %1d iters and %1.3f sec"
+						" with res = %1E" % (i, elapsed_time, res[i]))
+				break
+			else:
+				phi = phi_new
+				if (i > 1):
+					keff = keff_new
+
+
+		# Resize phi as a 2D array
+		phi = np.reshape(phi, (phi.size, 1))
+
+		# Plot the residuals of phi and keff at each iteration
+		if plot_residual:
+			fig = figure()
+			plot(np.array(range(i+1)), np.array(res))
+			plot(np.array(range(i+1)), np.array(keff_res))
+			legend(['flux', 'keff'])
+			yscale('log')
+			xlabel('iteration #')
+			ylabel('residual')
+			title('Power Iteration Residuals')
+
+		return phi, keff
+
+
+
+
+	def newtonKrylov(self, M, F, FD=True, newton_iter=20, inner_iter=25, \
+					tol=1E-5, guess=None, method='gmres', plot_residual=False):
+		'''
+		Solves for the maximal eigenvector of a linear system using an 
+		Inexact Newton outer iteration with a Krylov or other iterative 
+		linear solver for an inner iteration.
+		'''
+
+		# Start the timer
+		start_time = time()
+
+		# Initial guess for phi
+		if guess is None:
+			self._x = ones((M.shape[1]+1, 1))
+		else:
+			self._x = np.concatenate((guess, np.ones((1,1))))
+
+		# Get initial phi from x and normalize
+		phi = self._x[:self._x.size-1]
+		phi = phi / norm(phi)
+
+		# Guess initial keff
+		keff = 1.0
+
+		# Initial guess for the Newton update
+		dx = 0.01 * ones((M.shape[1]+1, 1))
+
+		# Compute the initial source
+		source_old = F * self._x[:self._x.size-1]
+
+		# Array for source and keff residuals
+		res = []
+		keff_res = []
+
+		# Outer Newton iteration
+		for i in range(newton_iter):
+
+			# Compute residual vector
+			Fx = self.computeF(self._x)
+
+			# Create a linear operator to compute the Jacobian vector product
+			if FD:
+				J = LinearOperator( (M.shape[0]+1,M.shape[1]+1), dtype=float, \
+									matvec=self.computeFDJacobVecProd )
+			else:
+				J = LinearOperator( (M.shape[0]+1,M.shape[1]+1), dtype=float, \
+						matvec=self.computeAnalyticJacobVecProd )
+
+			# Find the Newton update
+			dx = self.linearSolve(J, -Fx, outer_iter=inner_iter, \
+									method=method, tolerance=1E-4)
+
+			# Update x
+			self._x += dx			
+
+			# Normalize the flux
+			phi_new = self._x[:self._x.size-1]
+			phi_new = phi_new / norm(phi_new)
+	
+			# Update keff
+			source_new = F * phi_new
+			source_old = F * phi
+			tot_source_new = sum(source_new)
+			tot_source_old = sum(source_old)
+			keff_new = tot_source_new / tot_source_old
+
+			# Compute residuals
+			res.append(norm(source_old - source_new))
+			keff_res.append(abs(keff_new - keff) / keff)
+
+			print ("JFNK: i = %d	res = %1.5E"	
+					"	keff = %1.5f" % (i, res[i], keff))
+
+			# Check for convergence
+			if res[i] < tol:
+				elapsed_time = time() - start_time
+				print ("JFNK converged in %1d iters and %1.3f sec"
+						" with res = %1E" % (i, elapsed_time, res[i]))
+				break
+			else:
+				phi = phi_new
+				if (i > 1):
+					keff = keff_new
+
+		# Plot the residuals of phi and keff at each iteration
+		if plot_residual:
+			fig = figure()
+			plot(np.array(range(i+1)), np.array(res))
+			plot(np.array(range(i+1)), np.array(keff_res))
+			legend(['flux', 'keff'])
+			yscale('log')
+			xlabel('iteration #')
+			ylabel('residual')
+			title('Power Iteration Residuals')
+
+		return phi_new
+
+
+
+	def computeF(self, x):
+		'''
+		Compute the residual vector for JFNK
+		'''
+
+		m = x.size
+		phi = x[:m-1]
+		lamb = x[m-1][0]
+
+		# Allocate space for F
+		F = ones((m, 1))
+	
+		# M - lambda * F * phi constraint
+		F[:m-1] = self._LRA._M * phi - lamb * self._LRA._F * phi
+
+		# Flux normalization constraint
+		F[m-1] = -0.5 * vdot(phi, phi) + 0.5
+
+		return F
+
+
+
+	def computeAnalyticJacobVecProd(self, y):
+		'''
+		'''
+
+		m = self._x.shape[0]
+		phi = self._x[:m-1]
+		lamb = self._x[m-1]
+
+		# Construct temporary blocks for Jacobian
+		a = self._LRA._M - lamb[0] * self._LRA._F
+		b = phi.T
+		c = -self._LRA._F * phi
+		c = vstack([c, zeros(1)])
+
+		# Build Jacobian using scipy's sparse matrix stacking operators
+		J = vstack([a, b])
+		J = hstack([J, c])
+
+		return J * y
+
+
+
+
+	def computeFDJacobVecProd(self, y):
+		'''
+		'''
+
+		phi = self._x[:self._x.size-2]
+		lamb = self._x[self._x.size-1]		
+		y = resize(y, [y.size, 1])
+
+		b = 1E-8
+
+		epsilon = b * sum(self._x) / (y.size * norm(y))
+		
+		# Approximate Jacobian matrix vector multiplication
+		tmp1 = self.computeF(self._x + (epsilon * y))
+		tmp2 = self.computeF(self._x)
+		Jy = (tmp1 - tmp2) / epsilon
+
+		return Jy
+
+
+	def computeAnalyticJacobian(self):
+		'''
+		'''
+
+		m = self._x.shape[0]
+		phi = self._x[:m-1]
+		lamb = self._x[m-1][0]
+
+#		J = lil_matrix((m,m))
+
+		# Construct temporary blocks for Jacobian
+		a = self._LRA._M - lamb * self._LRA._F
+		b = -phi.T
+		c = -self._LRA._F * phi
+		c = vstack([c, zeros(1)])
+
+		# Build Jacobian using scipy's sparse matrix stacking operators
+		J = vstack([a, b])
+		J = hstack([J, c])
+
+		return J
+
+
 
 
 	def constructRestrictionOperator(self, mesh_old, method='fullweighting'):
@@ -170,7 +493,7 @@ class Solver(object):
 	def multigridVCycle(self, M, F, num_cycles, tol, precond=False):
 		
 		# Pre-relaxation using power iteration to get initial guess
-		phi, keff = self.powerIteration(M, F, 'bicgstab', 2, 1E-5)
+		phi, keff = self.powerIteration(M, F, 2, 1E-5, method='bicgstab')
 
 		# Compute residual
 		Au = (1. / keff) * F * phi
@@ -227,195 +550,24 @@ class Solver(object):
 #		fine_prob.plotPhi(e_h)
 #		fine_prob.plotPhi(phi)
 
-		phi, keff = self.powerIteration(M, F, 'bicgstab', 10, 1E-5, guess=phi)
-
-
-
-	def powerIteration(self, M, F, method, max_iters, tol, guess=None, precond=False):
-		'''
-		Perform power iteration for the keff eigenvalue problem.
-		Converges the source to a specified tolerance and plots the
-		fast and thermal flux and the residual at each iteration
-		'''
-
-		# Guess initial keff
-		keff = 1.0
-
-		# Guess initial flux and normalize it if user did not provide it
-		if guess is None:
-			phi = np.ones((M.shape[1], 1))
-			phi = phi / norm(phi)
-		else:
-			phi = guess
-			phi = phi / norm(phi)
-
-		# Array for phi_res and keff+res
-		phi_res = []
-		keff_res = []
-
-		for i in range(max_iters):
-
-			# Update flux vector
-
-			# If Preconditioned
-			if precond:
-				P = spilu(M.tocsc(), drop_tol=1e-5)
-				D_x = lambda x: P.solve(x)
-				D = LinearOperator((M.shape[0], M.shape[0]), D_x)
-
-				if method is 'bicgstab':
-					phi_new = bicgstab(M.tocsr(), ((1. / keff) * F * phi), M=D)
-				elif method is 'bicg':
-					phi_new = bicg(M.tocsr(), ((1. / keff) * F * phi), M=D)
-				elif method is 'gmres':
-					phi_new = gmres(M.tocsr(), ((1. / keff) * F * phi), M=D)
-				elif method is 'cg':
-					phi_new = cg(M.tocsr(), ((1. / keff) * F * phi), M=D)
-				elif method is 'cgs':
-					phi_new = cgs(M.tocsr(), ((1. / keff) * F * phi), M=D)
-				elif method is 'qmr':
-					phi_new = qmr(M.tocsr(), ((1. / keff) * F * phi), M=D)
-
-			# Unpreconditioned
-			else:
-				if method is 'bicgstab':
-					phi_new = bicgstab(M.tocsr(), ((1. / keff) * F * phi))
-				elif method is 'bicg':
-					phi_new = bicg(M.tocsr(), ((1. / keff) * F * phi))
-				elif method is 'gmres':
-					phi_new = gmres(M.tocsr(), ((1. / keff) * F * phi))
-				elif method is 'cg':
-					phi_new = cg(M.tocsr(), ((1. / keff) * F * phi))
-				elif method is 'cgs':
-					phi_new = cgs(M.tocsr(), ((1. / keff) * F * phi))
-				elif method is 'qmr':
-					phi_new = qmr(M.tocsr(), ((1. / keff) * F * phi))
-
-			phi_new = phi_new[0][:]
-
-			# Normalize new flux
-			phi_new = phi_new / norm(phi_new)
-	
-			# Update keff
-			source_new = F * phi_new
-			source_old = F * phi
-
-			tot_source_new = sum(source_new)
-			tot_source_old = sum(source_old)
-
-			keff_new = tot_source_new / tot_source_old
-
-			# Compute residuals
-			phi_res.append(norm(source_old - source_new))
-			keff_res.append(abs(keff_new - keff) / keff)
-
-			print 'Power iteration: i = %d	phi_res = %1E	keff_res = %1E' \
-					% (i, phi_res[i], keff_res[i])
-
-			# Check convergence
-			if phi_res[i] < tol and keff_res[i] < tol:
-				print 'Power iteration converged in %1d iters with keff = %1.5f' \
-																		% (i, keff)
-				break
-			else:
-				phi = phi_new
-				if (i > 1):
-					keff = keff_new
-
-
-		# Resize phi as a 2D array
-		phi = np.reshape(phi, (phi.size, 1))
-
-		# Plot the residuals of phi and keff at each iteration
-		fig = figure()
-		plot(np.array(range(i+1)), np.array(phi_res))
-		plot(np.array(range(i+1)), np.array(keff_res))
-		legend(['flux', 'keff'])
-		yscale('log')
-		xlabel('iteration #')
-		ylabel('residual')
-		title('Power Iteration Residuals')
-
-		return phi, keff
-
-
-
-	def newtonScipyGMRES(self, M, F, newton_iter, gmres_iter, tol, guess=None):
-
-		# Initial guess
-		if guess is None:
-			x = ones((M.shape[1]+1, 1))
-		else:
-			x = guess
-
-		dx = 0.01 * ones((M.shape[1]+1, 1))
-		source_old = F * x[:x.size-1]
-
-		# Outer Newton iteration
-		for i in range(newton_iter):
-
-			# Compute keff
-			phi = x[:x.size-1]
-			source_new = F * x[:x.size-1]
-			keff = sum(source_new) / sum(source_old)
-			res = norm(source_new - source_old)
-			source_old = source_new
-
-			# Compute residual vector
-			Fx = self._LRA.computeF(x)
-			print 'res = ' + str(res)
-#			res = norm(Fx)
-			print 'type(res) = ' + str(type(res))
-			print 'Newton-GMRES: i = %d	res = %1E	keff = %1.5f' % (i, res, keff)
-
-			# Check for convergence
-			if res < tol and i > 1:
-				print 'Newton-GMRES converged to %1d iterations for tol = %1E' % (i, res)
-				break
-
-			# Use GMRES to solve for delta in J*delta = F equation
-			J = self._LRA.computeAnalyticJacobian(x)
-
-			# ILU Preconditioned GMRES
-			P = spilu(J.tocsc(), drop_tol=1e-5)
-			D_x = lambda x: P.solve(x)
-			D = LinearOperator((J.shape[0], J.shape[0]), D_x)
-			dx = gmres(J.tocsr(), -Fx, tol=1E-3, maxiter=gmres_iter, M=D)
-
-
-			# Unpreconditioned GMRES
-			dx = gmres(J, -Fx, tol=1E-3, maxiter=gmres_iter)
-			dx = array(dx[0])
-			dx = reshape(dx, [dx.size, 1])
-
-			# Update x and renormalize the flux
-#			print 'x = ' + str(x[:5])
-			x = x + dx
-
-			x[:x.size-1] = x[:x.size-1] / norm(x[:x.size-1])
-			
-
-		print 'Newton-GMRES did not converge in %d iterations to tol = %1E' \
-														 % (newton_iter, tol)
-
-		phi = x[:x.size-1]
-
-		return phi
-
+		phi, keff = self.powerIteration(M, F, 10, 1E-5, method='bicgstab', \
+																guess=phi)
 
 
 if __name__ == '__main__':
 
     # Parse command line options
-	opts, args = getopt.getopt(sys.argv[1:], "t:n:m:psn", \
-					["num_mesh", "plot_mesh", "spy", "tolerance", "method"])
+	opts, args = getopt.getopt(sys.argv[1:], "t:n:i:o:psn", \
+					["num_mesh", "plot_mesh", "spy", "tolerance", \
+									"inner-method", "outer-method"])
 
 	# Default arguments
 	num_mesh = 5
-	tolerance = 1E-5
+	tolerance = 1E-8
 	plot_mesh = False
 	spyMF = False
-	method = 'bicgstab'
+	inner_method = 'bicgstab'
+	outer_method = 'jfnk-fd'
 
 	for o, a in opts:
 		if o in ("-n", "--num_mesh"):
@@ -426,45 +578,64 @@ if __name__ == '__main__':
 			plot_mesh = True
 		elif o in ("-s", "--spy"):
 			spyMF = True
-		elif o in ("-m", "--method"):
-			if a is 'bicgstab':
-				method = 'bicgstab'
-			elif a is 'bicg':
-				method = 'bicg'
-			elif a is 'gmres':
-				method = 'gmres'
-			elif a is 'cg':
-				method = 'cg'
-			elif a is 'cgs':
-				method = 'cgs'
-			elif a is 'qmr':
-				method = 'qmr'
+		elif o in ("-i", "--inner-method"):
+			if a in ('bicgstab'):
+				inner_method = 'bicgstab'
+			elif a in ('bicg'):
+				inner_method = 'bicg'
+			elif a in ('gmres'):
+				inner_method = 'gmres'
+			elif a in ('cg'):
+				inner_method = 'cg'
+			elif a in ('cgs'):
+				inner_method = 'cgs'
+			elif a in ('qmr'):
+				inner_method = 'qmr'
 			else:
-				print str(a) + ' is not a recognized linear solver'
+				print '%s is not a recognized linear solver' % (a)
+		elif o in ("-o", "--outer-method"):
+			if a in ('power'):
+				outer_method = 'power'
+			elif a in ('jfnk-fd'):
+				outer_method = 'jfnk-fd'
+			elif a in ('jfnk-analytic'):
+				outer_method = 'jfnk-analytic'
+			else:
+				print '%s is not recognized solver type' % (a)
 		else:
-			assert False, "unhandled option"
-
+			assert False, 'unhandled option'
 
 	prob = LRA.LRAProblem(num_mesh, num_mesh)
 	prob.setupMFMatrices()
+	solver = Solver(prob)
 
+	# Plot any items requested by the user
 	if plot_mesh:
 		prob.plotMesh()
 		prob.plotMaterials()
 	if spyMF:
 		prob.spyMF()
 
-	solver = Solver(prob)
 
+	if outer_method in ('power'):
+		phi, keff = solver.powerIteration(prob._M, prob._F, 1000, \
+								method=inner_method, tol=tolerance)
+		prob.plotPhi(phi)
 
-#	phi, keff = solver.powerIteration(prob._M, prob._F, method, 200, tolerance)
+	elif outer_method in ('jfnk-fd'):
+		phi = solver.newtonKrylov(prob._M, prob._F, FD=True, newton_iter=100, 
+									inner_iter=1000, method=inner_method, \
+									tol=tolerance, plot_residual=True)
+		prob.plotPhi(phi)
 
-#	phi, keff = solver.multigridVCycle(prob._M, prob._F, 2, tolerance, precond=False)
+	elif outer_method in ('jfnk-analytic'):
+		phi = solver.newtonKrylov(prob._M, prob._F, FD=False, newton_iter=100, 
+									inner_iter=1000, method=inner_method, \
+									tol=tolerance, plot_residual=True)
+		prob.plotPhi(phi)
 
-	phi, keff = solver.powerIteration(prob._M, prob._F, method, 5, tolerance)
-	phi = solver.newtonScipyGMRES(prob._M, prob._F, 100, 10, tolerance, guess=phi)
+#	phi, keff = solver.multigridVCycle(prob._M, prob._F, 2, method=method, tol=tolerance)
 
-	prob.plotPhi(phi)
 
 #	x = np.ones((prob._num_x_cells*prob._num_y_cells*2))
 #	x = ravel(x)
